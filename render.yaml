@@ -7,7 +7,7 @@ services:
     startCommand: npm run start
     nodeVersion: "24"
     plan: starter
-    healthCheckPath: /
+    healthCheckPath: /api/health
 
     envVars:
       - key: NODE_ENV
@@ -54,7 +54,7 @@ services:
       - key: CBL_APPROVED_US_REGIONS
         sync: false
       - key: CBL_SUPABASE_SCHEMA
-        sync: false
+        value: cblaero_app
       - key: CBL_SUBMISSION_INBOXES
         sync: false
       - key: CBL_VECTOR_AUDIT_ENABLED

@@ -1,0 +1,142 @@
+﻿# generated: 2026-03-11
+# project: CBLAero
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: docs/implementation_artifacts/stories
+
+generated: 2026-03-11
+project: CBLAero
+project_key: NOKEY
+tracking_system: file-system
+story_location: docs/implementation_artifacts/stories
+
+squad_members:
+  - squad-member-1
+  - squad-member-2
+
+epic_schedule:
+  epic-1:
+    owner: squad-member-1
+    start: week-1
+    finish: week-2
+  epic-2:
+    owner: squad-member-2
+    start: week-1
+    finish: week-2
+  epic-3:
+    owner: squad-member-1
+    start: week-1
+    finish: week-2
+  epic-4:
+    owner: squad-member-2
+    start: week-3
+    finish: week-3
+  epic-5:
+    owner: squad-member-1
+    start: week-3
+    finish: week-4
+  epic-6:
+    owner: squad-member-2
+    start: week-4
+    finish: week-4
+  epic-7:
+    owner: squad-member-1
+    start: week-3
+    finish: week-3
+  epic-8:
+    owner: squad-member-2
+    start: week-3
+    finish: week-4
+  epic-9:
+    owner: squad-member-1
+    start: week-4
+    finish: week-4
+
+development_status:
+  epic-1: done
+  1-1-initialize-next-js-baseline-with-core-platform-modules: done
+  1-2-implement-enterprise-sso-and-session-controls: done
+  1-3-enforce-rbac-and-tenant-isolated-authorization: done
+  1-4-build-admin-user-and-team-management-console: done
+  1-5-add-step-up-auth-for-sensitive-operations: done
+  1-6-enforce-usa-data-residency-policy-gates: done
+  1-7-add-active-client-context-safeguards: done
+  1-8-extract-data-service-repositories-and-eliminate-route-db-calls: done
+  1-9-create-centralized-ai-inference-service-with-prompt-registry: done
+  1-9a-ai-cost-dashboard-and-prompt-deployment-gates: done  # depends on 1.9
+  1-10-implement-shared-api-auth-middleware: done  # depends on 1.8
+  1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
+  epic-1-retrospective: done
+
+  epic-2: in-progress
+  2-1-build-admin-supervised-initial-1m-record-migration-pipeline: done
+  2-2-implement-recruiter-csv-upload-wizard-and-validation: done  # 2026-03-31: production ingestion (6,150 candidates), extra_attributes deployed, CLI script PR #29
+  2-3-implement-ats-and-email-ingestion-connectors: done
+  2-2a-implement-recruiter-pdf-resume-upload-with-llm-extraction: done
+  2-4-implement-candidate-profile-storage-and-indexing: done  # 2026-04-02: reworked + reviewed — expanded filters, sorting, saved searches, dashboard UI
+  2-4a-dashboard-ui-standardization: done  # 2026-04-08: white backgrounds, consistent headers/breadcrumbs/footers, font normalization, UI standards doc + workflow integration
+  2-4b-sync-run-summary-and-error-management: done  # 2026-04-08: sync_runs table, run tracking in all 5 jobs, summary card, error detail page, 2 adversarial reviews (19 findings fixed)
+  2-5-implement-deterministic-deduplication-and-manual-review-queue: done
+  2-5a-implement-deduced-role-classification: done  # 2026-04-08: role taxonomy, heuristic+LLM deduction, UI, enrichment job — adversarial review (Sonnet) passed, 22 findings fixed
+  2-6-implement-availability-state-and-manual-refresh-operations: done  # 2026-04-09: code review passed (Sonnet), 342 tests, Task 8.3 deferred
+  2-7-implement-global-scheduler-control-plane: backlog
+  epic-2-retrospective: optional
+
+  epic-3: backlog
+  3-1-build-sms-outreach-template-and-scheduling-workflow: backlog
+  3-2-build-email-outreach-templates-with-role-permissions: backlog
+  3-3-implement-consent-opt-out-and-channel-preference-engine: backlog
+  3-4-capture-candidate-responses-and-seriousness-inputs: backlog
+  3-5-track-delivery-outcomes-and-retry-failed-sends: backlog
+  3-6-enable-candidate-one-time-token-registration: backlog
+  3-7-implement-bulk-campaign-execution-at-scale: backlog
+  epic-3-retrospective: optional
+
+  epic-4: backlog
+  4-1-implement-job-intake-with-mandatory-aviation-questions: backlog
+  4-2-build-daily-candidate-queue-view-by-job: backlog
+  4-3-implement-interaction-logging-and-journey-state-machine: backlog
+  4-4-build-bulk-candidate-operations-and-export-workflow: backlog
+  4-5-implement-formal-offer-workflow: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-implement-weighted-opportunity-scoring-core: backlog
+  5-2-build-availability-freshness-and-seriousness-computation: backlog
+  5-3-implement-domain-screening-and-rejection-reason-codes: backlog
+  5-4-implement-faa-verification-lifecycle: backlog
+  5-5-implement-drug-test-compliance-tracking: backlog
+  5-6-build-confidence-recalibration-and-seasonal-adjustment-controls: backlog
+  epic-5-retrospective: optional
+
+  epic-6: backlog
+  6-1-implement-recruiter-daily-top-5-teams-digest: backlog
+  6-2-implement-rich-teams-action-cards: backlog
+  6-3-build-delivery-head-event-and-workload-alerts: backlog
+  6-4-implement-notification-configuration-console: backlog
+  epic-6-retrospective: optional
+
+  epic-7: backlog
+  7-1-build-core-operational-dashboard: backlog
+  7-2-add-recruiter-and-customer-trend-analytics: backlog
+  7-3-implement-cost-and-budget-governance-views: backlog
+  7-4-implement-peer-comparison-and-support-recommendations: backlog
+  7-5-add-pipeline-forecasting-and-kpi-breach-alerting: backlog
+  epic-7-retrospective: optional
+
+  epic-8: backlog
+  8-1-implement-immutable-audit-event-pipeline-and-export: backlog
+  8-2-implement-retention-archival-and-backup-governance: backlog
+  8-3-implement-gdpr-deletion-workflow-end-to-end: backlog
+  8-4-implement-reliability-controls-for-provider-and-queue-failures: backlog
+  8-5-implement-provider-health-and-api-metering-alerts: backlog
+  8-6-implement-security-anomaly-escalation-workflow: backlog
+  epic-8-retrospective: optional
+
+  epic-9: backlog
+  9-1-implement-candidate-token-login-and-profile-view: backlog
+  9-2-implement-candidate-availability-and-seriousness-self-updates: backlog
+  9-3-build-candidate-application-status-timeline: backlog
+  9-4-implement-candidate-lifecycle-notifications: backlog
+  9-5-implement-candidate-offer-and-document-download: backlog
+  epic-9-retrospective: optional
