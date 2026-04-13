@@ -19,19 +19,19 @@ curl -sSL https://github.com/supabase/cli/releases/latest/download/supabase_linu
   && sudo mv /tmp/supabase /usr/local/bin/ \
   && echo "  ✓ Supabase $(supabase --version)" \
   || echo "  ℹ Supabase CLI install failed – retry manually"
+  && echo "  done Supabase $(supabase --version)" \
+  || echo "  i Supabase CLI install failed – retry manually"
 
 # ── 3. Render CLI ───────────────────────────────────
 echo ""
 echo "▶ Installing Render CLI (optional — failure does not abort setup)..."
 (npm install -g @render-oss/cli --loglevel=error 2>/dev/null || \
   curl -fsSL https://render.com/install-cli.sh | bash 2>/dev/null || \
-  echo "  ℹ Render CLI skipped – install manually if needed") || true
+  echo "  i Render CLI skipped – install manually if needed") || true
 
 # ── 4. BMAD Method – all modules ────────────────────
 echo ""
 echo "▶ Installing BMAD Method (all modules)..."
-# Modules: bmm (default), bmb (Builder), cis (Creative Intelligence),
-#          gds (Game Dev Studio), tea (Test Architect)
 npx bmad-method install \
   --yes \
   --tools claude-code \
@@ -43,7 +43,7 @@ echo ""
 echo "▶ BMAD status:"
 npx bmad-method status
 
-# ── 5. Git config (placeholder – user fills in) ─────
+# ── 5. Git config ────────────────────────────────────
 echo ""
 echo "▶ Configuring git defaults..."
 git config --global pull.rebase false
@@ -53,28 +53,41 @@ git config --global init.defaultBranch main
 if [ ! -f ".env.local" ]; then
   echo ""
   echo "▶ Creating .env.local scaffold..."
-  cat > .env.local << 'EOF'
+  cat > .env.local << 'ENVEOF'
+# ── App ───────────────────────────────────────────────
+CBL_SESSION_SECRET=
+CBL_APP_URL=http://localhost:3000
+
 # ── Supabase ──────────────────────────────────────────
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
+CBL_SUPABASE_URL=
+CBL_SUPABASE_SERVICE_ROLE_KEY=
+CBL_SUPABASE_SCHEMA=cblaero_app
+
+# ── Microsoft Entra SSO ───────────────────────────────
+CBL_SSO_ISSUER=
+CBL_SSO_CLIENT_ID=
+CBL_SSO_CLIENT_SECRET=
+CBL_SSO_ALLOWED_EMAIL_DOMAIN=cblsolutions.com
+CBL_SSO_ALLOWED_TENANT_ID=
+
+# ── Data Residency ────────────────────────────────────
+CBL_APPROVED_US_REGIONS=us-east-1,us-west-2
+CBL_DATA_REGION=us-west-2
+CBL_LOG_REGION=us-west-2
+CBL_BACKUP_REGION=us-west-2
 
 # ── Anthropic ─────────────────────────────────────────
 ANTHROPIC_API_KEY=
-
-# ── Render (set in Render dashboard env vars) ─────────
-# RENDER_API_KEY=
-EOF
-  echo "  ✓ .env.local created – fill in your keys"
+ENVEOF
+  echo "  done .env.local created – fill in your keys"
 fi
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║  ✅ Setup complete!                          ║"
+echo "║  Setup complete!                             ║"
 echo "║                                              ║"
 echo "║  Next steps:                                 ║"
 echo "║  1. Fill in .env.local with your keys        ║"
-echo "║  2. Run: supabase start  (local DB)          ║"
-echo "║  3. Run: npm run dev                         ║"
-echo "║  4. Sign in to GitHub Copilot in VS Code     ║"
+echo "║  2. Run: npm run dev                         ║"
+echo "║  3. Sign in to GitHub Copilot in VS Code     ║"
 echo "╚══════════════════════════════════════════════╝"

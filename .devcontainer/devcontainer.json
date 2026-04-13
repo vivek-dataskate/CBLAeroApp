@@ -12,6 +12,8 @@
       "version": "24",
       "nvmVersion": "latest"
     }
+    "ghcr.io/devcontainers/features/git:1": { "version": "latest" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "24" }
   },
 
   "customizations": {
@@ -33,6 +35,8 @@
         "streetsidesoftware.code-spell-checker",
         "christian-kohler.path-intellisense",
         "ms-playwright.playwright",
+        "eamodio.gitlens",
+        "usernamehw.errorlens",
         "vitest.explorer"
       ],
       "settings": {
@@ -47,6 +51,9 @@
         "github.copilot.enable": {
           "*": true
         }
+        "typescript.tsdk": "node_modules/typescript/lib",
+        "typescript.enablePromptUseWorkspaceTsdk": true,
+        "terminal.integrated.defaultProfile.linux": "bash"
       }
     }
   },
@@ -69,6 +76,10 @@
       "label": "Supabase Studio",
       "onAutoForward": "notify"
     }
+    "3000": { "label": "Next.js App", "onAutoForward": "notify" },
+    "54321": { "label": "Supabase API", "onAutoForward": "silent" },
+    "54322": { "label": "Supabase DB", "onAutoForward": "silent" },
+    "54323": { "label": "Supabase Studio", "onAutoForward": "notify" }
   },
 
   "postCreateCommand": "bash .devcontainer/setup.sh",
@@ -78,10 +89,12 @@
   },
 
   "mounts": [],
+  "remoteEnv": { "NODE_ENV": "development" },
 
   "hostRequirements": {
     "cpus": 4,
     "memory": "8gb",
     "storage": "32gb"
   }
+}
 }
