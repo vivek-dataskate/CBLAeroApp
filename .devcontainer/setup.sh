@@ -13,8 +13,12 @@ npm install
 
 # ── 2. Supabase CLI ─────────────────────────────────
 echo ""
-echo "▶ Installing Supabase CLI..."
-npm install -g supabase --loglevel=error
+echo "▶ Installing Supabase CLI (binary)..."
+curl -sSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz -o /tmp/sb.tar.gz \
+  && tar xf /tmp/sb.tar.gz -C /tmp \
+  && sudo mv /tmp/supabase /usr/local/bin/ \
+  && echo "  done Supabase $(supabase --version)" \
+  || echo "  i Supabase CLI install failed – retry manually"
 
 # ── 3. Render CLI ───────────────────────────────────
 echo ""
