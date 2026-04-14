@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source /workspaces/CBLAeroApp/.backup-env 2>/dev/null || true
+
 BACKUP_REPO_NAME="vivek-dataskate/CBLAeroApp-artifacts"
 BACKUP_DIR="/tmp/cblaero-artifacts-backup"
 DATE=$(date '+%Y-%m-%d %H:%M')
-
-# Use Codespace secret if available, otherwise fail gracefully
+source /workspaces/CBLAeroApp/.backup-env 2>/dev/null || true
 TOKEN="${ARTIFACTS_BACKUP_TOKEN:-}"
+
 if [[ -z "$TOKEN" ]]; then
   echo "⚠️  ARTIFACTS_BACKUP_TOKEN not set — skipping backup"
   exit 0
 fi
 
-echo "▶ Backing up artifacts to ${BACKUP_REPO_NAME}..."
+echo "▶ Backing up artifacts..."
 rm -rf "$BACKUP_DIR"
 git clone "https://oauth2:${TOKEN}@github.com/${BACKUP_REPO_NAME}.git" "$BACKUP_DIR" --quiet
 
