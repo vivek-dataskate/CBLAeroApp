@@ -1,7 +1,6 @@
 name: dev-story
 description: 'Execute story implementation following a context filled story spec file. Use when the user says "dev this story [story file]" or "implement the next story in the sprint plan"'
 
-# Critical variables from config
 config_source: "{project-root}/_bmad/bmm/config.yaml"
 user_name: "{config_source}:user_name"
 communication_language: "{config_source}:communication_language"
@@ -9,23 +8,31 @@ user_skill_level: "{config_source}:user_skill_level"
 document_output_language: "{config_source}:document_output_language"
 date: system-generated
 
-# Workflow components
 installed_path: "{project-root}/_bmad/bmm/workflows/4-implementation/dev-story"
 instructions: "{installed_path}/instructions.xml"
 validation: "{installed_path}/checklist.md"
 
-story_file: "" # Explicit story path; auto-discovered if empty
+story_file: ""
 implementation_artifacts: "{config_source}:implementation_artifacts"
 planning_artifacts: "{config_source}:planning_artifacts"
+stories_folder: "{implementation_artifacts}/stories"
 sprint_status: "{implementation_artifacts}/sprint-status.yaml"
 project_context: "**/project-context.md"
 
-# Auto-load development standards so dev agents follow established patterns
 input_file_patterns:
   development_standards:
-    description: "Mandatory implementation rules and patterns for all stories"
+    description: "Mandatory implementation rules and patterns — MUST follow for all stories"
     whole: "{planning_artifacts}/*development-standards*.md"
     load_strategy: "FULL_LOAD"
+  architecture:
+    description: "System architecture — MUST read Implemented Capabilities Registry before coding; register new reusable capabilities after done"
+    whole: "{planning_artifacts}/*architecture*.md"
+    sharded: "{planning_artifacts}/*architecture*/*.md"
+    load_strategy: "FULL_LOAD"
+  supabase_schema:
+    description: "Database schema — MUST update supabase/schema.sql if story makes ANY db changes (tables, columns, constraints, indexes, RLS, RPCs)"
+    whole: "{project-root}/supabase/schema.sql"
+    load_strategy: "SELECTIVE_LOAD"
   dashboard_ui_standards:
     description: "Dashboard UI design standards — mandatory for any story touching src/app/dashboard/"
     whole: "**/dashboard-ui-standards.md"
