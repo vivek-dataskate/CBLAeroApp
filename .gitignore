@@ -70,6 +70,8 @@ PROJECT_STATUS.md
 
 # VS Code local workspace settings (tasks are personal)
 .vscode/
+# Exception: MCP server configuration should be committed
+!.vscode/mcp.json
 
 # BMAD temporary work files (generated during workflow execution)
 tech-spec-wip.md

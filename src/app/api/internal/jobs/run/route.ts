@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { CeipalIngestionJob, EmailIngestionJob, OneDriveResumePollerJob, DedupWorkerJob, SavedSearchDigestJob, RoleDeductionEnrichmentJob, CandidateAvailabilityRefreshJob } from '@/modules/ingestion/jobs';
+import { CeipalIngestionJob, EmailIngestionJob, OneDriveResumePollerJob, DedupWorkerJob, SavedSearchDigestJob, RoleDeductionEnrichmentJob, CandidateAvailabilityRefreshJob, registerIngestionJobs } from '@/modules/ingestion/jobs';
 import { isSupabaseConfigured } from '@/modules/persistence';
+import { GlobalScheduler } from '@/modules/ingestion/scheduler';
 import {
   countCandidatesBySource,
   getLastCandidateUpdateBySource,
@@ -22,15 +23,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const body = await request.json().catch(() => ({})) as {
+  // P9: Guard against JSON literal `null` body causing TypeError on property access
+  const rawBody = await request.json().catch(() => ({}));
+  const body = (rawBody !== null && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {}) as {
     job?: string;
     mode?: 'initial-load' | 'daily-sync';
     pages?: number; // initial-load: how many pages per call (default 1, max 20)
   };
 
-  const jobName = body.job;
-  const ALLOWED_JOBS = ['ceipal-sync', 'email-sync', 'onedrive-sync', 'dedup', 'saved-search-digest', 'role-enrichment', 'availability-refresh'];
-  if (!jobName || !ALLOWED_JOBS.includes(jobName)) {
+  // P6: Normalize empty-string job name — treats "" the same as missing
+  const jobName = body.job || undefined;
+  const ALLOWED_JOBS = ['ceipal-sync', 'email-sync', 'onedrive-sync', 'dedup', 'saved-search-digest', 'role-enrichment', 'availability-refresh', 'scheduler'];
+  if (jobName && !ALLOWED_JOBS.includes(jobName)) {
     return NextResponse.json({
       error: { code: 'UNKNOWN_JOB', message: `Unknown job name. Available: ${ALLOWED_JOBS.join(', ')}` },
     }, { status: 400 });
@@ -39,6 +43,20 @@ export async function POST(request: NextRequest) {
   const start = Date.now();
 
   try {
+    if (!jobName || jobName === 'scheduler') {
+      const scheduler = new GlobalScheduler();
+      registerIngestionJobs(scheduler);
+      // DN7/AC3: Two-phase execution — scheduler claims + writes outbox, worker consumes outbox
+      const scheduleResult = await scheduler.runDueJobs();
+      const workerResult = await scheduler.processOutbox();
+      return NextResponse.json({
+        status: 'ok',
+        job: 'scheduler',
+        duration_ms: Date.now() - start,
+        scheduler_outcomes: scheduleResult.outcomes,
+        worker_outcomes: workerResult.outcomes,
+      });
+    }
     if (jobName === 'ceipal-sync') {
       await runCeipalSync(body.mode ?? 'daily-sync', Math.min(body.pages ?? 1, 20));
     } else if (jobName === 'onedrive-sync') {

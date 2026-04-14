@@ -30,6 +30,16 @@ export interface SchedulerJob {
   run(): Promise<void>;
 }
 
+export type SchedulerRegistration = {
+  jobKey: string;
+  scheduleName: string;
+  cronExpression: string;
+  enabled?: boolean;
+  tenantId?: string; // P2: explicit tenant scoping; falls back to DEFAULT_TENANT_ID when absent
+  policyFamily?: string;
+  policyKey?: string;
+};
+
 export class EmailIngestionJob implements SchedulerJob {
   name = 'EmailIngestionJob';
   private parser = new MicrosoftGraphEmailParser();
@@ -1106,14 +1116,57 @@ export class CandidateAvailabilityRefreshJob implements SchedulerJob {
   }
 }
 
-export function registerIngestionJobs(scheduler: { register(job: SchedulerJob): void }) {
-  scheduler.register(new CeipalIngestionJob());
-  scheduler.register(new EmailIngestionJob());
-  scheduler.register(new OneDriveResumePollerJob());
-  scheduler.register(new SavedSearchDigestJob());
-  scheduler.register(new DedupWorkerJob());
-  scheduler.register(new RoleDeductionEnrichmentJob());
-  scheduler.register(new CandidateAvailabilityRefreshJob());
+export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, metadata?: SchedulerRegistration): void }) {
+  // DN5: All jobs carry policyFamily/policyKey so cadences are versioned and auditable
+  scheduler.register(new CeipalIngestionJob(), {
+    jobKey: 'ceipal-sync',
+    scheduleName: 'Ceipal ATS sync',
+    cronExpression: '0 2 * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'ceipal_sync',
+  });
+  scheduler.register(new EmailIngestionJob(), {
+    jobKey: 'email-sync',
+    scheduleName: 'Email inbox sync',
+    cronExpression: '*/15 * * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'email_sync',
+  });
+  scheduler.register(new OneDriveResumePollerJob(), {
+    jobKey: 'onedrive-sync',
+    scheduleName: 'OneDrive resume sync',
+    cronExpression: '0 * * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'onedrive_sync',
+  });
+  scheduler.register(new SavedSearchDigestJob(), {
+    jobKey: 'saved-search-digest',
+    scheduleName: 'Saved search digest',
+    cronExpression: '0 6 * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'saved_search_digest',
+  });
+  scheduler.register(new DedupWorkerJob(), {
+    jobKey: 'dedup',
+    scheduleName: 'Dedup worker',
+    cronExpression: '*/15 * * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'dedup',
+  });
+  scheduler.register(new RoleDeductionEnrichmentJob(), {
+    jobKey: 'role-enrichment',
+    scheduleName: 'Role deduction enrichment',
+    cronExpression: '0 3 * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'role_enrichment',
+  });
+  scheduler.register(new CandidateAvailabilityRefreshJob(), {
+    jobKey: 'availability-refresh',
+    scheduleName: 'Candidate availability refresh',
+    cronExpression: '0 */4 * * *',
+    policyFamily: 'refresh_cadences',
+    policyKey: 'candidate_availability',
+  });
 }
 
 // GlobalScheduler stub removed — deferred to Story 2.7. Use registerIngestionJobs() with a real scheduler.

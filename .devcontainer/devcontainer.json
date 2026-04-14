@@ -9,12 +9,29 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "GitHub.copilot", "GitHub.copilot-chat", "GitHub.vscode-pull-request-github",
-        "GitHub.vscode-github-actions", "anthropic.claude-code", "supabase.supabase",
-        "bradlc.vscode-tailwindcss", "esbenp.prettier-vscode", "dbaeumer.vscode-eslint",
-        "ms-vscode.vscode-typescript-next", "prisma.prisma", "eamodio.gitlens",
-        "usernamehw.errorlens", "streetsidesoftware.code-spell-checker",
-        "christian-kohler.path-intellisense", "ms-playwright.playwright", "vitest.explorer"
+        "anthropic.claude-code",
+        "github.codespaces",
+        "github.copilot-chat",
+        "github.github-vscode-theme",
+        "github.vscode-pull-request-github",
+        "ms-azuretools.vscode-containers",
+        "ms-ossdata.vscode-pgsql",
+        "rdudiver.bmad-viewer-vscode",
+        "vitest.explorer",
+        "GitHub.vscode-github-actions",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "ms-vscode.vscode-typescript-next",
+        "prisma.prisma",
+        "eamodio.gitlens",
+        "usernamehw.errorlens",
+        "streetsidesoftware.code-spell-checker",
+        "christian-kohler.path-intellisense",
+        "ms-playwright.playwright",
+        "ms-vscode.vscode-json",
+        "redhat.vscode-yaml",
+        "ms-vscode-remote.remote-containers"
       ],
       "settings": {
         "editor.formatOnSave": true,
@@ -30,11 +47,11 @@
   "forwardPorts": [3000, 54321, 54322, 54323],
   "portsAttributes": {
     "3000": { "label": "Next.js App", "onAutoForward": "notify" },
-    "54321": { "label": "Supabase API", "onAutoForward": "silent" },
+    "54321": { "label": "Supabase API", "onAutoForward": "silent" },anthropic.claude-code --force && code --install-extension github.codespaces --force && code --install-extension github.copilot-chat --force && code --install-extension github.github-vscode-theme --force && code --install-extension github.vscode-pull-request-github --force && code --install-extension ms-azuretools.vscode-containers --force && code --install-extension ms-ossdata.vscode-pgsql --force && code --install-extension rdudiver.bmad-viewer-vscode --force && code --install-extension vitest.explorer
     "54322": { "label": "Supabase DB", "onAutoForward": "silent" },
     "54323": { "label": "Supabase Studio", "onAutoForward": "notify" }
   },
-  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postCreateCommand": "bash .devcontainer/setup.sh && echo 'Installing VS Code extensions...' && code --install-extension GitHub.copilot --force && code --install-extension GitHub.vscode-github-actions --force && code --install-extension bradlc.vscode-tailwindcss --force && code --install-extension dbaeumer.vscode-eslint --force && code --install-extension prisma.prisma --force && code --install-extension eamodio.gitlens --force && code --install-extension usernamehw.errorlens --force && code --install-extension ms-vscode.vscode-json --force && code --install-extension redhat.vscode-yaml --force && code --install-extension ms-vscode-remote.remote-containers --force",
   "postStartCommand": "bash scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1 || true && nohup bash -c 'while true; do sleep 3600 && bash /workspaces/CBLAeroApp/scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1; done' > /dev/null 2>&1 &",
   "remoteEnv": { "NODE_ENV": "development" },
   "mounts": [],
