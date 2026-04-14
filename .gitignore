@@ -54,3 +54,26 @@ Desktop.ini
 
 # dist output
 /dist
+
+# BMAD framework installation (workflow engine, agents, configs)
+_bmad/
+_bmad-core/
+
+# BMAD project artifacts (PRD, stories, architecture, sprint tracking)
+_bmad-output/
+
+# Claude / Cowork session data and skills
+.claude/
+
+# Project management docs (contain business/product details)
+PROJECT_STATUS.md
+
+# VS Code local workspace settings (tasks are personal)
+.vscode/
+
+# BMAD temporary work files (generated during workflow execution)
+tech-spec-wip.md
+deferred-work.md
+review-prompt-*.md
+**/ux-color-themes.html
+**/ux-design-directions.html
