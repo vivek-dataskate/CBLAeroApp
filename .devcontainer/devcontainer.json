@@ -1,56 +1,32 @@
 {
   "name": "CBLAeroApp Dev",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
-
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/git:1": {
-      "ppa": true,
-      "version": "latest"
-    },
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "24",
-      "nvmVersion": "latest"
-    }
+    "ghcr.io/devcontainers/features/git:1": { "ppa": true, "version": "latest" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "24", "nvmVersion": "latest" }
   },
-
   "customizations": {
     "vscode": {
       "extensions": [
-        "GitHub.copilot",
-        "GitHub.copilot-chat",
-        "GitHub.vscode-pull-request-github",
-        "GitHub.vscode-github-actions",
-        "anthropic.claude-code",
-        "supabase.supabase",
-        "bradlc.vscode-tailwindcss",
-        "esbenp.prettier-vscode",
-        "dbaeumer.vscode-eslint",
-        "ms-vscode.vscode-typescript-next",
-        "prisma.prisma",
-        "eamodio.gitlens",
-        "usernamehw.errorlens",
-        "streetsidesoftware.code-spell-checker",
-        "christian-kohler.path-intellisense",
-        "ms-playwright.playwright",
-        "vitest.explorer"
+        "GitHub.copilot", "GitHub.copilot-chat", "GitHub.vscode-pull-request-github",
+        "GitHub.vscode-github-actions", "anthropic.claude-code", "supabase.supabase",
+        "bradlc.vscode-tailwindcss", "esbenp.prettier-vscode", "dbaeumer.vscode-eslint",
+        "ms-vscode.vscode-typescript-next", "prisma.prisma", "eamodio.gitlens",
+        "usernamehw.errorlens", "streetsidesoftware.code-spell-checker",
+        "christian-kohler.path-intellisense", "ms-playwright.playwright", "vitest.explorer"
       ],
       "settings": {
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "esbenp.prettier-vscode",
-        "editor.codeActionsOnSave": {
-          "source.fixAll.eslint": "explicit"
-        },
+        "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" },
         "typescript.tsdk": "node_modules/typescript/lib",
         "typescript.enablePromptUseWorkspaceTsdk": true,
         "terminal.integrated.defaultProfile.linux": "bash",
-        "github.copilot.enable": {
-          "*": true
-        }
+        "github.copilot.enable": { "*": true }
       }
     }
   },
-
   "forwardPorts": [3000, 54321, 54322, 54323],
   "portsAttributes": {
     "3000": { "label": "Next.js App", "onAutoForward": "notify" },
@@ -58,19 +34,9 @@
     "54322": { "label": "Supabase DB", "onAutoForward": "silent" },
     "54323": { "label": "Supabase Studio", "onAutoForward": "notify" }
   },
-
-  "postCreateCommand": "bash .devcontainer/setup.sh && sudo apt-get install -y cron && (crontab -l 2>/dev/null; printf '@reboot sleep 10 && bash /workspaces/CBLAeroApp/scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1\\n0 * * * * bash /workspaces/CBLAeroApp/scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1\\n') | crontab -",
-  "postStartCommand": "sudo service cron start && bash /workspaces/CBLAeroApp/scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1 || true",
-
-  "remoteEnv": {
-    "NODE_ENV": "development"
-  },
-
+  "postCreateCommand": "bash .devcontainer/setup.sh && bash scripts/setup-cron.sh",
+  "postStartCommand": "bash scripts/setup-cron.sh && bash scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1 || true",
+  "remoteEnv": { "NODE_ENV": "development" },
   "mounts": [],
-
-  "hostRequirements": {
-    "cpus": 4,
-    "memory": "8gb",
-    "storage": "32gb"
-  }
+  "hostRequirements": { "cpus": 4, "memory": "8gb", "storage": "32gb" }
 }
