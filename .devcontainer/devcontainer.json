@@ -34,8 +34,8 @@
     "54322": { "label": "Supabase DB", "onAutoForward": "silent" },
     "54323": { "label": "Supabase Studio", "onAutoForward": "notify" }
   },
-  "postCreateCommand": "bash .devcontainer/setup.sh && bash scripts/setup-cron.sh",
-  "postStartCommand": "bash scripts/setup-cron.sh && bash scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1 || true",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1 || true && nohup bash -c 'while true; do sleep 3600 && bash /workspaces/CBLAeroApp/scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1; done' > /dev/null 2>&1 &",
   "remoteEnv": { "NODE_ENV": "development" },
   "mounts": [],
   "hostRequirements": { "cpus": 4, "memory": "8gb", "storage": "32gb" }
