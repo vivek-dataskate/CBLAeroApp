@@ -1,0 +1,60 @@
+name: create-story
+description: 'Creates a dedicated story file with all the context the agent will need to implement it later. Use when the user says "create the next story" or "create story [story identifier]"'
+
+config_source: "{project-root}/_bmad/bmm/config.yaml"
+user_name: "{config_source}:user_name"
+communication_language: "{config_source}:communication_language"
+document_output_language: "{config_source}:document_output_language"
+user_skill_level: "{config_source}:user_skill_level"
+date: system-generated
+planning_artifacts: "{config_source}:planning_artifacts"
+implementation_artifacts: "{config_source}:implementation_artifacts"
+
+installed_path: "{project-root}/_bmad/bmm/workflows/4-implementation/create-story"
+template: "{installed_path}/template.md"
+instructions: "{installed_path}/instructions.xml"
+validation: "{installed_path}/checklist.md"
+
+stories_folder: "{implementation_artifacts}/stories"
+sprint_status: "{implementation_artifacts}/sprint-status.yaml"
+epics_file: "{planning_artifacts}/epics.md"
+prd_file: "{planning_artifacts}/prd.md"
+architecture_file: "{planning_artifacts}/architecture.md"
+ux_file: "{planning_artifacts}/*ux*.md"
+story_title: ""
+project_context: "**/project-context.md"
+default_output_file: "{implementation_artifacts}/stories/{{story_key}}.md"
+
+input_file_patterns:
+  development_standards:
+    description: "Mandatory implementation rules — story must reference relevant patterns"
+    whole: "{planning_artifacts}/*development-standards*.md"
+    load_strategy: "FULL_LOAD"
+  prd:
+    description: "PRD (fallback - epics file should have most content)"
+    whole: "{planning_artifacts}/*prd*.md"
+    sharded: "{planning_artifacts}/*prd*/*.md"
+    load_strategy: "SELECTIVE_LOAD"
+  architecture:
+    description: "Architecture — reference Implemented Capabilities Registry to reuse existing services"
+    whole: "{planning_artifacts}/*architecture*.md"
+    sharded: "{planning_artifacts}/*architecture*/*.md"
+    load_strategy: "SELECTIVE_LOAD"
+  ux:
+    description: "UX design (fallback - epics file should have relevant sections)"
+    whole: "{planning_artifacts}/*ux*.md"
+    sharded: "{planning_artifacts}/*ux*/*.md"
+    load_strategy: "SELECTIVE_LOAD"
+  epics:
+    description: "Enhanced epics+stories file with BDD and source hints"
+    whole: "{planning_artifacts}/*epic*.md"
+    sharded: "{planning_artifacts}/*epic*/*.md"
+    load_strategy: "SELECTIVE_LOAD"
+  dashboard_ui_standards:
+    description: "Dashboard UI design standards — include in Dev Notes when story touches dashboard pages"
+    whole: "**/dashboard-ui-standards.md"
+    load_strategy: "SELECTIVE_LOAD"
+  supabase_schema:
+    description: "Current DB schema — note existing tables/columns/constraints in Dev Notes; flag required schema changes; dev must update schema.sql after any DB changes"
+    whole: "{project-root}/supabase/schema.sql"
+    load_strategy: "SELECTIVE_LOAD"

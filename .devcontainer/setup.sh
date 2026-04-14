@@ -91,3 +91,21 @@ echo "║  1. Fill in .env.local with your keys        ║"
 echo "║  2. Run: npm run dev                         ║"
 echo "║  3. Sign in to GitHub Copilot in VS Code     ║"
 echo "╚══════════════════════════════════════════════╝"
+
+# ── Restore CBLAeroApp BMAD customizations ───────────
+echo ""
+echo "▶ Restoring CBLAeroApp workflow customizations..."
+OVERRIDES_DIR=".devcontainer/bmad-overrides"
+if [ -d "$OVERRIDES_DIR" ]; then
+  cp "$OVERRIDES_DIR/4-implementation/dev-story/workflow.yaml"    _bmad/bmm/4-implementation/dev-story/workflow.yaml
+  cp "$OVERRIDES_DIR/4-implementation/create-story/workflow.yaml" _bmad/bmm/4-implementation/create-story/workflow.yaml
+  cp "$OVERRIDES_DIR/4-implementation/code-review/workflow.yaml"  _bmad/bmm/4-implementation/code-review/workflow.yaml
+  cp "$OVERRIDES_DIR/config.yaml"                                  _bmad/bmm/config.yaml
+  cp "$OVERRIDES_DIR/project-context.md"                          _bmad/project-context.md
+  # 3-solutioning workflows
+  mkdir -p _bmad/bmm/3-solutioning/create-architecture
+  mkdir -p _bmad/bmm/3-solutioning/create-epics-and-stories
+  cp "$OVERRIDES_DIR/3-solutioning/create-architecture/workflow.md"    _bmad/bmm/3-solutioning/create-architecture/workflow.md
+  cp "$OVERRIDES_DIR/3-solutioning/create-epics-and-stories/workflow.md" _bmad/bmm/3-solutioning/create-epics-and-stories/workflow.md
+  echo "  ✓ Workflow overrides applied"
+fi
