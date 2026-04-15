@@ -143,12 +143,14 @@ grant execute on function cblaero_app.claim_due_schedules(text, timestamptz, tim
 
 -- ── claim_pending_outbox_events RPC ──────────────────────────────────────────
 -- Atomic outbox claim using FOR UPDATE SKIP LOCKED.  Called by
--- GlobalScheduler.processOutbox() — the event-driven worker side (AC 3).
+-- GlobalScheduler.processOutbox().  p_schedule_run_id (optional) scopes
+-- the claim to a single run's outbox events (used by the admin trigger endpoint).
 
 create or replace function cblaero_app.claim_pending_outbox_events(
-  p_tenant_id text,
-  p_now       timestamptz,
-  p_limit     integer default 20
+  p_tenant_id       text,
+  p_now             timestamptz,
+  p_limit           integer default 20,
+  p_schedule_run_id uuid    default null
 )
 returns setof cblaero_app.outbox_events
 language plpgsql
@@ -166,6 +168,7 @@ begin
     from   cblaero_app.outbox_events
     where  tenant_id = p_tenant_id
       and  status    = 'pending'
+      and  (p_schedule_run_id is null or schedule_run_id = p_schedule_run_id)
     order  by created_at asc
     for update skip locked
     limit  p_limit
@@ -174,7 +177,7 @@ begin
 end;
 $$;
 
-grant execute on function cblaero_app.claim_pending_outbox_events(text, timestamptz, integer)
+grant execute on function cblaero_app.claim_pending_outbox_events(text, timestamptz, integer, uuid)
   to service_role;
 
 -- ── Policy registry seeds ─────────────────────────────────────────────────────

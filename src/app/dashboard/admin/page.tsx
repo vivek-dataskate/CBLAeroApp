@@ -13,6 +13,7 @@ import { listAdminActionEvents, listStepUpAttemptEvents } from "@/modules/audit"
 import AdminGovernanceConsole from "./AdminGovernanceConsole";
 import AiCostDashboard from "./AiCostDashboard";
 import SyncRunSummaryCard from "./SyncRunSummaryCard";
+import SchedulerStatusCard from "./SchedulerStatusCard";
 
 type AdminDashboardSearchParams = {
   activeClientId?: string | string[];
@@ -122,7 +123,14 @@ export default async function AdminDashboardPage({
           <span className="flex-1" />
         </div>
 
-        {/* Two-column: Errors + AI costs */}
+        {/* Scheduler status */}
+        <div className="mt-4">
+          <Card>
+            <SchedulerStatusCard />
+          </Card>
+        </div>
+
+        {/* Two-column: Sync runs + AI costs */}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <Card>
             <SyncRunSummaryCard />
