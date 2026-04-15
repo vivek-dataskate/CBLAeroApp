@@ -62,8 +62,7 @@ Desktop.ini
 _bmad/
 _bmad-core/
 
-# BMAD project artifacts (PRD, stories, architecture, sprint tracking)
-_bmad-output/
+# BMAD project artifacts (PRD, stories, architecture, sprint tracking) — committed to git
 
 # Claude / Cowork session data and skills
 .claude/
