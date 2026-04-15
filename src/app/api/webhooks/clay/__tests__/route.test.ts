@@ -19,21 +19,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // payload normalization, fingerprint gate, sync_run lifecycle — without coupling
 // to the internal details of `batchUpsertCandidatesFromATS`.
 
+// Track RPC calls to upsert_clay_hourly_sync_run so tests can assert on the
+// payload (the hourly bucket RPC is the new Story 2.8 observability surface
+// after the 2026-04-15 hourly-bucket refactor).
+const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+// Fake Supabase admin client that handles both:
+//   (1) `.from('admin_managed_users').select().eq().eq().maybeSingle()` for
+//       assignee resolution — always returns a fixed test user
+//   (2) `.rpc('upsert_clay_hourly_sync_run', args)` for the hourly bucket upsert
+//       — records calls into `rpcCalls` for assertions
+function makeFakeSupabaseClient() {
+  const userQueryBuilder = {
+    select: () => userQueryBuilder,
+    eq: () => userQueryBuilder,
+    maybeSingle: () =>
+      Promise.resolve({ data: { actor_id: 'test-assignee-actor-id' }, error: null }),
+  };
+  return {
+    from: (_table: string) => userQueryBuilder,
+    rpc: (name: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ name, args });
+      return Promise.resolve({ data: 'bucket-run-fake-1', error: null });
+    },
+  };
+}
+
 const persistenceMocks = vi.hoisted(() => ({
-  isSupabaseConfigured: vi.fn(() => false),
+  isSupabaseConfigured: vi.fn(() => true),
   getSupabaseAdminClient: vi.fn(),
 }));
 vi.mock('@/modules/persistence', () => persistenceMocks);
 
 // Mock the ingestion barrel module that the webhook imports from directly.
 // batchUpsertCandidatesFromATS is the shared ingestion entry point we delegate to;
-// createSyncRun / completeSyncRun / failSyncRun / recordSyncFailure are sync-run
-// lifecycle helpers; DEFAULT_TENANT_ID is a constant we pass through.
+// recordSyncFailure is the error-logging helper (no sync_run lifecycle calls
+// anymore — the webhook uses the upsert_clay_hourly_sync_run RPC via the
+// mocked Supabase admin client above).
 const ingestionMocks = vi.hoisted(() => ({
   batchUpsertCandidatesFromATS: vi.fn().mockResolvedValue({ inserted: 1, failed: 0 }),
-  createSyncRun: vi.fn().mockResolvedValue('run-fake-1'),
-  completeSyncRun: vi.fn().mockResolvedValue(undefined),
-  failSyncRun: vi.fn().mockResolvedValue(undefined),
   recordSyncFailure: vi.fn(),
   DEFAULT_TENANT_ID: 'cbl-aero',
   // Re-exports from the barrel that other code might touch — kept as pass-through stubs
@@ -63,10 +87,11 @@ beforeEach(async () => {
   process.env.CLAY_WEBHOOK_DEBUG = 'false';
   // Reset all mocks between tests
   vi.clearAllMocks();
-  persistenceMocks.isSupabaseConfigured.mockReturnValue(false);
+  rpcCalls.length = 0;
+  persistenceMocks.isSupabaseConfigured.mockReturnValue(true);
+  persistenceMocks.getSupabaseAdminClient.mockReturnValue(makeFakeSupabaseClient());
   fingerprintMocks.isAlreadyProcessed.mockResolvedValue(false);
   ingestionMocks.batchUpsertCandidatesFromATS.mockResolvedValue({ inserted: 1, failed: 0 });
-  ingestionMocks.createSyncRun.mockResolvedValue('run-fake-1');
 
   // Reset cached assignee user ID between tests
   const { __resetClayWebhookCacheForTests } = await import('@/app/api/webhooks/clay/route');
@@ -261,14 +286,17 @@ describe('POST /api/webhooks/clay — row-level error containment', () => {
     expect(ingestionMocks.batchUpsertCandidatesFromATS).toHaveBeenCalledTimes(2);
   });
 
-  it('records sync_run as failed when all rows error', async () => {
+  it('records hourly bucket with errored count when all rows error', async () => {
     // Row has a valid fingerprint but the shared pipeline rejects it (0 inserted)
     ingestionMocks.batchUpsertCandidatesFromATS.mockResolvedValue({ inserted: 0, failed: 1 });
     vi.resetModules();
     const { POST } = await import('@/app/api/webhooks/clay/route');
     const res = await POST(makeRequest(SAMPLE_ROW) as never);
     expect(res.status).toBe(200);
-    expect(ingestionMocks.failSyncRun).toHaveBeenCalled();
+    // The hourly bucket RPC is called with errored=1, accepted=0
+    const bucketCall = rpcCalls.find((c) => c.name === 'upsert_clay_hourly_sync_run');
+    expect(bucketCall).toBeDefined();
+    expect(bucketCall?.args).toEqual({ p_accepted: 0, p_skipped: 0, p_errored: 1 });
   });
 
   it('skips rows with no fingerprint-eligible identity before calling the shared pipeline', async () => {
@@ -289,22 +317,48 @@ describe('POST /api/webhooks/clay — row-level error containment', () => {
   });
 });
 
-describe('POST /api/webhooks/clay — sync run lifecycle', () => {
-  it('creates a sync_run for every request', async () => {
+describe('POST /api/webhooks/clay — hourly bucket aggregation', () => {
+  it('calls upsert_clay_hourly_sync_run RPC exactly once per request', async () => {
     vi.resetModules();
     const { POST } = await import('@/app/api/webhooks/clay/route');
     await POST(makeRequest(SAMPLE_ROW) as never);
-    expect(ingestionMocks.createSyncRun).toHaveBeenCalledWith('clay_enrichment');
+    const bucketCalls = rpcCalls.filter((c) => c.name === 'upsert_clay_hourly_sync_run');
+    expect(bucketCalls).toHaveLength(1);
   });
 
-  it('completes the sync_run with accurate counts on success', async () => {
+  it('passes accurate accepted/skipped/errored counts to the bucket RPC', async () => {
     vi.resetModules();
     const { POST } = await import('@/app/api/webhooks/clay/route');
     await POST(makeRequest(SAMPLE_ROW) as never);
-    expect(ingestionMocks.completeSyncRun).toHaveBeenCalledWith('run-fake-1', {
-      succeeded: 1,
-      failed: 0,
-      total: 1,
-    });
+    const bucketCall = rpcCalls.find((c) => c.name === 'upsert_clay_hourly_sync_run');
+    expect(bucketCall?.args).toEqual({ p_accepted: 1, p_skipped: 0, p_errored: 0 });
+  });
+
+  it('aggregates a batch of 3 rows into a single bucket call', async () => {
+    const row1 = SAMPLE_ROW;
+    const row2 = {
+      ...SAMPLE_ROW,
+      'Personal Email': 'row2@example.com',
+      'Enrich person': { ...SAMPLE_ROW['Enrich person'], profile_id: 2, last_refresh: '2026-04-15 19:00:00' },
+    };
+    const row3 = {
+      ...SAMPLE_ROW,
+      'Personal Email': 'row3@example.com',
+      'Enrich person': { ...SAMPLE_ROW['Enrich person'], profile_id: 3, last_refresh: '2026-04-15 19:01:00' },
+    };
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    await POST(makeRequest([row1, row2, row3]) as never);
+    const bucketCalls = rpcCalls.filter((c) => c.name === 'upsert_clay_hourly_sync_run');
+    expect(bucketCalls).toHaveLength(1);
+    expect(bucketCalls[0]?.args).toEqual({ p_accepted: 3, p_skipped: 0, p_errored: 0 });
+  });
+
+  it('reports bucket_run_id in the response body', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const res = await POST(makeRequest(SAMPLE_ROW) as never);
+    const body = await res.json();
+    expect(body.bucket_run_id).toBe('bucket-run-fake-1');
   });
 });
