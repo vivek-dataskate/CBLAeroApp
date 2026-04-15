@@ -291,6 +291,7 @@ export function mapToCandidateRow(record: Record<string, unknown>, source: strin
     availability_status: 'active',
     ingestion_state: overrides?.ingestion_state ?? 'pending_dedup',
     created_by_actor_id: str('createdByActorId'),
+    source_recruiter_actor_id: str('sourceRecruiterActorId'),
     extra_attributes: record.additionalFields && typeof record.additionalFields === 'object'
       ? record.additionalFields
       : (record.extra_attributes && typeof record.extra_attributes === 'object' ? record.extra_attributes : {}),

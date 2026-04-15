@@ -69,7 +69,7 @@ development_status:
   1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
   epic-1-retrospective: done
 
-  epic-2: done
+  epic-2: in-progress  # reopened 2026-04-15 to add story 2-8 (Clay Webhook Ingestion)
   2-1-build-admin-supervised-initial-1m-record-migration-pipeline: done
   2-2-implement-recruiter-csv-upload-wizard-and-validation: done  # 2026-03-31: production ingestion (6,150 candidates), extra_attributes deployed, CLI script PR #29
   2-3-implement-ats-and-email-ingestion-connectors: done
@@ -82,6 +82,7 @@ development_status:
   2-6-implement-availability-state-and-manual-refresh-operations: done  # 2026-04-09: code review passed (Sonnet), 342 tests, Task 8.3 deferred
   2-7-implement-global-scheduler-control-plane: done  # 2026-04-14: 2x adversarial code review (Sonnet), 22 findings fixed (7 DN + 15 patch), 6 deferred. outbox consumer, FOR UPDATE SKIP LOCKED, policy versioning, readiness probe implemented.
   2-7a-scheduler-admin-dashboard: done  # 2026-04-15: implemented — admin UI for scheduler management (view, trigger, pause, change cron, set next_run_at). 3 API routes + SchedulerStatusCard + auth actions. PR #72 merged.
+  2-8-implement-clay-webhook-ingestion: in-progress  # added 2026-04-15 via bmad-correct-course — push pattern (Clay HTTP API column → /api/webhooks/clay), real payload shape (enrichlinkedin_data nested blob + lowercase email/phone sidecars), default assignee vivek@cblsolutions.com, 53 unit+integration tests passing
   epic-2-retrospective: optional
 
   epic-3: backlog

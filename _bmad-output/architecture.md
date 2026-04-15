@@ -163,7 +163,7 @@ Every request receives a `x-trace-id` (UUID) in `proxy.ts` middleware. This ID m
 
 ### Candidate Data Ingestion Architecture
 
-Four ingestion paths are supported; all funnel through the same deduplication and enrichment pipeline.
+Five ingestion paths are supported; all funnel through the same deduplication and enrichment pipeline.
 
 **Unified Candidate Extraction Service:**
 
@@ -221,6 +221,25 @@ extractCandidateFromDocument(
 - Both paths write to `import_batch` with source attribution; sync errors alert the admin and never silently discard records.
 - Admin console shows per-connector: last sync timestamp, records synced/skipped/errored, and error rate trend.
 - **Interim scheduling (pre-Story 2.7):** Render Cron Jobs call `/api/internal/jobs/run` every 15 minutes for email sync and daily for Ceipal sync. This is a temporary workaround until the Postgres-backed global scheduler is implemented.
+
+**Path 5 — Clay webhook ingestion (push, Story 2.8):**
+
+- Inbound **push** from a recruiter-curated Clay workspace table. Clay's **HTTP API column** (visible on the right side of the configured table view) fires an outbound HTTP request per row as each row finishes enrichment. CBLAero exposes a webhook endpoint (`POST /api/webhooks/clay`) that receives those pushes. No scheduler, no cursor, no polling — Clay is the clock.
+- **Authentication:** shared-secret bearer token. Clay's HTTP API column is configured with an `Authorization: Bearer {CLAY_WEBHOOK_SECRET}` header; the webhook rejects requests without a matching token with HTTP 401 before any processing. Invalid JSON returns HTTP 400. Oversized payloads (>256 KB) return HTTP 413.
+- **Payload shape (confirmed against production Clay 2026-04-15):** top-level JSON with `{ "enrichlinkedin_data": { ... nested LinkedIn blob ... }, "email": "...", "phone": "..." }`. The webhook accepts a single row object, an array of row objects, OR a wrapped `{ "rows": [...] }` envelope. Nested blob key and sidecar field names are configurable via env vars (`CLAY_EMAIL_FIELD`, `CLAY_PHONE_FIELD`) for mapper shape tolerance.
+- **Field mapping:** core LinkedIn-derived fields (`first_name`, `last_name`, `url`, `title`, `org`, `country`, `location_name`, `experience`, `certifications`) land in typed `candidates` columns; the full Clay payload is preserved under `candidates.extra_attributes.clay.*` for future field promotion without reingestion. The sidecar `email` column is the dedup key.
+- **Content fingerprint basis:** `clay:${profile_id}:${last_refresh}` stored under `fingerprint_type='ats_external_id'` (reusing the existing fingerprint enum — the `clay:` hash prefix prevents collision with Ceipal's `ceipal:` prefix). Stable across unchanged rows, re-triggers on re-enrichment. A replay of the same fingerprint is a guaranteed no-op, which is how Clay retries and Clay-side bulk re-runs are handled safely.
+- **Shared ingestion path:** the webhook delegates to `batchUpsertCandidatesFromATS` from `src/modules/ingestion/index.ts` — the same helper used by Ceipal, email, and CSV ingestion. No parallel code path. `mapToCandidateRow` is extended with a single-line addition to honor the new `sourceRecruiterActorId` field; all other ingestion sources remain unaffected.
+- **Provenance stamping:** every Clay-ingested candidate is stamped with `source: 'clay_enrichment'` and `source_recruiter_actor_id = <default assignee user ID>`. The assignee is resolved from the `CLAY_DEFAULT_ASSIGNEE_EMAIL` env var on first use (looked up against `admin_managed_users`) and cached for the process lifetime. If the email doesn't resolve to an active user, the webhook responds with HTTP 503 (fail-loud, not silent-orphan). Recruiter-level attribution (mapping individual Clay enrichers to CBLAero users) is deferred until a real candidate assignment model exists — likely Epic 4.
+- **Sync runs** are tracked in the `sync_runs` table (Story 2.4b) with `source=clay_enrichment` and row-level counts (received, accepted, skipped, errored). Errors are grouped on the existing 2.4b error detail page. Row-level failures never block sibling rows.
+- **Residency enforcement:** the Story 1.6 residency policy gate is a **startup-time** check — the process refuses to boot outside approved regions, so any Clay request the webhook accepts is guaranteed to write into an approved-region database by construction. No per-request residency check needed.
+- **Admin observability** reuses the existing Story 2.4b sync runs dashboard. The Story 2.7a scheduler dashboard is **not** extended — Clay has no scheduled job to list because it's push-driven.
+- **Debug mode:** `CLAY_WEBHOOK_DEBUG=true` (default during rollout) dumps the raw payload on every request so mapper drift can be detected and fixed quickly. Toggle off once the mapper is stable in production.
+- **Backfill of existing ~9,000 rows:** re-fire the Clay HTTP API column on all rows via "Run on all rows" from the column menu. The same webhook handles net-new rows and backfill uniformly; fingerprint idempotency prevents duplicate work on second re-runs.
+
+**Clay flow direction — inbound vs outbound:**
+
+Earlier sections of this document describe an *outbound* Clay enrichment flow where CBLAero emits `enrichment.requested` jobs, pushes candidate stubs to the Clay API, and ingests enriched results back (see the _Enrichment Provider Integration_ and _Candidate Enrichment Workflow_ sequence diagrams). That flow is a **separate, future capability** tied to the Epic 5 scoring pipeline and remains unimplemented. Path 5 (Story 2.8) is the **inbound** flow: Clay pushes recruiter-curated rows to CBLAero via its HTTP API column. The two flows share the same provider but have opposite directions, different triggers, and different consumers — they are intentionally distinct and neither supersedes the other.
 
 ### Content Fingerprint Gate
 
