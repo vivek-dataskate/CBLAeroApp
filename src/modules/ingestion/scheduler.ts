@@ -163,6 +163,11 @@ export class GlobalScheduler {
       return { outcomes: [] };
     }
 
+    // D4 fixed: warn when claim result hits the limit — silently deferred jobs become visible in logs
+    if ((claimedDefinitions ?? []).length === 20) {
+      console.warn('[GlobalScheduler] Claimed maximum of 20 due schedules — additional due jobs may be deferred to the next tick');
+    }
+
     const outcomes: ScheduleOutcome[] = [];
 
     for (const claimedDefinition of claimedDefinitions ?? []) {
@@ -176,7 +181,6 @@ export class GlobalScheduler {
       outcomes.push(outcome);
 
       const jobRegistration = this.registeredJobs.get(claimedDefinition.job_key);
-      const claimedAt = new Date();
 
       // DN4: Re-resolve policy version at claim time using live registered metadata
       const claimTimePolicyVersionId = jobRegistration?.metadata.policyFamily && jobRegistration?.metadata.policyKey
@@ -191,6 +195,8 @@ export class GlobalScheduler {
         nowIso,
       );
       outcome.runId = runId ?? undefined;
+      // D3 fixed: capture claimedAt after async overhead so next_run_at reflects actual work start
+      const claimedAt = new Date();
 
       if (!runId) {
         console.error(`[GlobalScheduler] ${claimedDefinition.job_key}: failed to create schedule_run — skipping`);
@@ -505,7 +511,8 @@ export class GlobalScheduler {
           requested_at: requestedAt,
           claimed_at: requestedAt,
           status: 'claimed',
-          worker_id: 'scheduler',
+          // D1 fixed: derive unique worker_id per instance for multi-pod tracing
+          worker_id: process.env.HOSTNAME ?? 'scheduler',
         })
         .select('id')
         .single();
@@ -578,7 +585,13 @@ export class GlobalScheduler {
     if (errorMessage !== undefined) update.error_message = String(errorMessage).slice(0, 2000);
     if (startedAt) update.started_at = startedAt;
     if (completedAt) update.completed_at = completedAt;
-    if (resultPayload !== undefined) update.result_payload = resultPayload;
+    if (resultPayload !== undefined) {
+      // D2 fixed: guard against unbounded JSONB growth — truncate oversized payloads
+      const payloadJson = JSON.stringify(resultPayload);
+      update.result_payload = payloadJson.length <= 65536
+        ? resultPayload
+        : { _truncated: true, _original_size_bytes: payloadJson.length };
+    }
     // NP4: log status update errors so stuck records are visible in logs
     const { error } = await db.from('schedule_runs').update(update).eq('id', runId);
     if (error) {
