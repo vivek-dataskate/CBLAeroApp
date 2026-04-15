@@ -269,6 +269,14 @@ alter table cblaero_app.candidates
 alter table cblaero_app.candidates
   add column if not exists created_by_actor_id text;
 
+-- Story 2.8: Clay webhook ingestion — forward-looking recruiter provenance column
+alter table cblaero_app.candidates
+  add column if not exists source_recruiter_actor_id text;
+
+create index if not exists idx_candidates_source_recruiter
+  on cblaero_app.candidates (tenant_id, source_recruiter_actor_id)
+  where source_recruiter_actor_id is not null;
+
 create unique index if not exists uq_candidates_tenant_email
   on cblaero_app.candidates (tenant_id, email)
   where email is not null;
@@ -1020,7 +1028,7 @@ begin
         postal_code, current_company, job_title, alternate_email,
         skills, certifications, experience, extra_attributes,
         availability_status, ingestion_state, source, source_batch_id,
-        created_by_actor_id, resume_url, linkedin_url,
+        created_by_actor_id, source_recruiter_actor_id, resume_url, linkedin_url,
         work_authorization, clearance, aircraft_experience, employment_type,
         current_rate, per_diem, has_ap_license, years_of_experience,
         ceipal_id, submitted_by, submitter_email, shift_preference,
@@ -1050,6 +1058,7 @@ begin
         coalesce(v_row->>'source', 'email'),
         (v_row->>'source_batch_id')::uuid,
         nullif(trim(coalesce(v_row->>'created_by_actor_id', '')), ''),
+        nullif(trim(coalesce(v_row->>'source_recruiter_actor_id', '')), ''),
         nullif(trim(coalesce(v_row->>'resume_url', '')), ''),
         nullif(trim(coalesce(v_row->>'linkedin_url', '')), ''),
         nullif(trim(coalesce(v_row->>'work_authorization', '')), ''),
@@ -1083,6 +1092,8 @@ begin
           else excluded.ingestion_state
         end,
         source = excluded.source, source_batch_id = excluded.source_batch_id,
+        -- Story 2.8: preserve existing source_recruiter_actor_id if already set (do-not-overwrite rule)
+        source_recruiter_actor_id = coalesce(cblaero_app.candidates.source_recruiter_actor_id, excluded.source_recruiter_actor_id),
         resume_url = coalesce(excluded.resume_url, cblaero_app.candidates.resume_url),
         linkedin_url = coalesce(excluded.linkedin_url, cblaero_app.candidates.linkedin_url),
         updated_at = now()
@@ -1097,7 +1108,7 @@ begin
         postal_code, current_company, job_title, alternate_email,
         skills, certifications, experience, extra_attributes,
         availability_status, ingestion_state, source, source_batch_id,
-        created_by_actor_id, resume_url, linkedin_url,
+        created_by_actor_id, source_recruiter_actor_id, resume_url, linkedin_url,
         work_authorization, clearance, aircraft_experience, employment_type,
         current_rate, per_diem, has_ap_license, years_of_experience,
         ceipal_id, submitted_by, submitter_email, shift_preference,
@@ -1127,6 +1138,7 @@ begin
         coalesce(v_row->>'source', 'email'),
         (v_row->>'source_batch_id')::uuid,
         nullif(trim(coalesce(v_row->>'created_by_actor_id', '')), ''),
+        nullif(trim(coalesce(v_row->>'source_recruiter_actor_id', '')), ''),
         nullif(trim(coalesce(v_row->>'resume_url', '')), ''),
         nullif(trim(coalesce(v_row->>'linkedin_url', '')), ''),
         nullif(trim(coalesce(v_row->>'work_authorization', '')), ''),

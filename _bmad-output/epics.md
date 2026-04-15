@@ -731,6 +731,148 @@ So that ATS syncs, inbox scans, refresh sweeps, and future digests do not rely o
 
 **And** prior runs remain auditable against the schedule and policy version in effect at execution time
 
+### Story 2.8: Implement Clay Webhook Ingestion
+
+As an admin,
+I want candidates curated by recruiters in our Clay workspace to flow into CBLAero automatically as soon as they're enriched,
+So that LinkedIn-enriched candidates become part of the searchable candidate database the moment Clay finishes processing them.
+
+**Context:** Recruiters vet candidates on LinkedIn and use Clay to enrich them with personal email and phone. Clay's **HTTP API column** (visible on the right side of the Clay table at [app.clay.com/workspaces/621935/workbooks/wb_0sy0elgA57hzDWMoXZh](https://app.clay.com/workspaces/621935/workbooks/wb_0sy0elgA57hzDWMoXZh)) fires an outbound HTTP request per row as each row completes enrichment. This story exposes a webhook endpoint in CBLAero that receives those per-row pushes, passes them through the Story 1.11 fingerprint gate, the Story 2.5 dedup pipeline, and the shared Story 2.3 `batchUpsertCandidatesFromATS` ingestion path, and persists with `source: 'clay_enrichment'`. All Clay-ingested candidates are stamped to a single default CBLAero user (`vivek@cblsolutions.com`) via the new `source_recruiter_actor_id` column — recruiter-level attribution is deferred until a real candidate assignment model exists (likely Epic 4).
+
+**Integration pattern:** Push (Clay → CBLAero), not pull. No scheduler dependency. No cursor. Clay is the clock.
+
+**Production payload shape (confirmed 2026-04-15 via webhook.site capture):**
+
+```json
+{
+  "enrichlinkedin_data": {
+    "first_name": "Michaela",
+    "last_name": "Ealey",
+    "url": "https://www.linkedin.com/in/michaela-ealey-b0a74360",
+    "title": "Billing Specialist",
+    "headline": "Billing Coordinator at Kelley Drye & Warren LLP",
+    "org": "Kelley Drye & Warren LLP",
+    "country": "United States",
+    "location_name": "Temple Hills Park, Maryland, United States",
+    "experience": [ /* array of role objects */ ],
+    "education": [ /* array of school objects */ ],
+    "profile_id": 216822394,
+    "last_refresh": "2026-04-15 19:54:39.698",
+    "...": "full LinkedIn enrichment blob"
+  },
+  "email": "ealey12@comcast.net",
+  "phone": "+12406916249"
+}
+```
+
+The nested LinkedIn blob lives under `enrichlinkedin_data` (Clay's default Enrich Person column key). The sidecar personal email and phone columns are top-level lowercase `email` / `phone` keys. Both the nested key and sidecar field names are configurable via env vars (`CLAY_EMAIL_FIELD`, `CLAY_PHONE_FIELD`) — defaults match the production Clay column configuration.
+
+**Acceptance Criteria:**
+
+**Given** a configured Clay table with an HTTP API output column pointing at `POST {CBL_APP_URL}/api/webhooks/clay`
+**When** a row in Clay finishes enrichment and Clay fires the HTTP API column
+**Then** the webhook receives a JSON payload containing the full row (structured LinkedIn data nested under `enrichlinkedin_data` + sidecar `email` / `phone` columns)
+**And** the request carries an `Authorization: Bearer {CLAY_WEBHOOK_SECRET}` header matching the server-configured shared secret
+**And** requests without a valid secret are rejected with HTTP 401 and never reach the ingestion pipeline
+**And** requests with a valid secret but malformed JSON are rejected with HTTP 400 and a structured error body
+**And** payloads exceeding 256 KB are rejected with HTTP 413
+
+**Given** Clay's HTTP API column may be configured to send a single row per request OR a batch of rows
+**When** the webhook is invoked
+**Then** the handler accepts both shapes — a single row object, an array of row objects, OR a wrapped `{ "rows": [...] }` envelope — and iterates row-by-row internally
+**And** row-level errors accumulate into `sync_run_errors` without failing sibling rows
+**And** the HTTP response reports per-row outcome counts (received, accepted, skipped, errored) so Clay's HTTP API column surfaces a 200 even when a subset of rows had non-fatal issues
+
+**Given** a validated Clay row arrives at the ingestion pipeline
+**When** the handler maps the row via `mapClayRowToCandidate`
+**Then** core fields land in typed `candidates` columns per the mapping table below, and the full Clay payload (minus fields already promoted to columns) is preserved under `candidates.extra_attributes.clay.*`
+**And** the candidate is upserted via the **shared `batchUpsertCandidatesFromATS` entry point** — Clay routes through the same ingestion code path as ATS, CSV, and email, with no parallel implementation
+**And** `source` is set to `'clay_enrichment'`
+**And** the sidecar personal email (column name configurable via `CLAY_EMAIL_FIELD`, default `email`) is the dedup identity (matching the existing `uq_candidates_tenant_email` unique index)
+**And** the sidecar phone is stored as received (no E.164 normalization in this story — Clay already normalizes)
+**And** Story 2.5a role deduction runs automatically on new candidates with no extra integration work
+**And** Story 2.5 dedup evaluates the new row through the standard pipeline
+
+**Clay row → candidates column mapping (confirmed against production payload):**
+
+| Clay payload field | Target | Notes |
+|---|---|---|
+| top-level `email` (env: `CLAY_EMAIL_FIELD`) | `email` | dedup key; lowercased on ingest |
+| top-level `phone` (env: `CLAY_PHONE_FIELD`) | `phone` | stored as-sent |
+| `enrichlinkedin_data.first_name` | `first_name` | |
+| `enrichlinkedin_data.last_name` | `last_name` | |
+| `enrichlinkedin_data.url` | `linkedin_url` | |
+| `enrichlinkedin_data.title` (fallback `headline` if not `--` / `—`, then `latest_experience.title`) | `job_title` | tolerant of degenerate title values |
+| `enrichlinkedin_data.org` (fallback `latest_experience.company`) | `current_company` | |
+| `enrichlinkedin_data.country` | `country` | |
+| `enrichlinkedin_data.location_name` | `location` (raw) + parse → `city`, `state` | comma-split parser; noops gracefully on non-US formats |
+| `enrichlinkedin_data.experience` array | `experience` jsonb | direct |
+| `enrichlinkedin_data.certifications` | `certifications` jsonb | direct (null → `[]`) |
+| everything else (incl. `education`, `languages`, `connections`, `num_followers`, `summary`, etc.) | `extra_attributes.clay.*` | preserves full raw payload for future field promotion without reingestion |
+
+**Given** the `CLAY_DEFAULT_ASSIGNEE_EMAIL` env var is set (e.g. `vivek@cblsolutions.com`)
+**When** the webhook handler processes a row
+**Then** it resolves the configured email to a `cblaero_app.admin_managed_users` record on first use and caches the user ID for the process lifetime
+**And** if the email does not resolve to an active user, the request is rejected with HTTP 503 and a clear error message (fail-loud, not silent-orphan)
+**And** every Clay-ingested candidate is stamped with `source_recruiter_actor_id = <cached user ID>` (new nullable column added in this story)
+
+**Given** a Clay row matches an existing candidate via the Story 2.5 dedup pipeline
+**When** the match auto-merges via the email uniqueness constraint
+**Then** Clay-sourced fields merge into the existing candidate under the provider-precedence rules already enforced by the `upsert_candidate_batch` RPC
+**And** if the existing candidate already has a non-null `source_recruiter_actor_id`, the value is preserved (no overwrite — enforced by the updated RPC's `coalesce(existing, excluded)` rule)
+**And** the merge is logged under the Story 2.5 audit trail
+
+**Given** a Clay row is being processed
+**When** the content fingerprint gate (Story 1.11) evaluates it
+**Then** the fingerprint basis is `clay:${profile_id}:${last_refresh}` stored under `fingerprint_type='ats_external_id'` and `source='ats'` (reusing the existing fingerprint enum — the `clay:` hash prefix prevents collision with Ceipal's `ceipal:` prefix)
+**And** a fingerprint hit short-circuits mapping and upsert entirely, responding with `skipped` for that row
+**And** fingerprint hits are logged as structured events for observability (`event: fingerprint_hit, type: ats_external_id, source: ats`)
+
+**Given** the webhook handler persists rows
+**When** the request completes (success or partial failure)
+**Then** a `sync_runs` row is created per the Story 2.4b pattern with `source=clay_enrichment` and row-level counts (received, accepted, skipped, errored)
+**And** row-level errors accumulate in `sync_run_errors` for admin review on the existing 2.4b error detail page
+**And** the sync run is visible in the Story 2.4b summary card on the admin dashboard alongside ATS/email/OneDrive runs
+
+**Given** data residency policy (Story 1.6) restricts processing region
+**When** the webhook handler prepares to write any row to the database
+**Then** the startup-time residency gate (already authoritative via Story 1.6) prevents the process from booting outside approved regions
+**And** no per-request residency check is needed — any Clay request the webhook accepts is guaranteed to write into an approved-region database by construction
+
+**Non-functional requirements:**
+- Webhook p95 response latency: **under 2 seconds** for a single-row payload at expected Clay send rate
+- Payload size ceiling: **256 KB** per request
+- Idempotency: replay of the same `clay:${profile_id}:${last_refresh}` fingerprint is a guaranteed no-op
+- Row-level failures never block sibling rows in the same request
+- Startup fails loudly if `CLAY_WEBHOOK_SECRET` or `CLAY_DEFAULT_ASSIGNEE_EMAIL` is unset (no silent fallback to "accept anything")
+- Debug logging enabled by default (`CLAY_WEBHOOK_DEBUG=true`) during initial rollout — dumps the raw payload for each request so mapper drift can be detected and fixed quickly
+
+**Reuse of existing ingestion code (mandatory per development-standards §3):**
+- Fingerprint gate → `isAlreadyProcessed` / `recordFingerprint` from `fingerprint-repository.ts` (Story 1.11)
+- Shared upsert path → `batchUpsertCandidatesFromATS` from `src/modules/ingestion/index.ts` (Story 2.3 helper, reused unchanged)
+- Canonical row mapping → `mapToCandidateRow` extended with a single-line `source_recruiter_actor_id: str('sourceRecruiterActorId')` addition (backward compatible)
+- Dedup worker → `DedupWorkerJob` (Story 2.5) runs automatically on new Clay rows via the shared `ingestion_state='pending_dedup'` default
+- Role deduction → `RoleDeductionEnrichmentJob` (Story 2.5a) enriches Clay candidates with no extra integration
+- Sync run tracking → `createSyncRun` / `completeSyncRun` / `failSyncRun` / `recordSyncFailure` from `sync-error-repository.ts` (Story 2.4b)
+- Residency gate → Story 1.6 startup-time check (unchanged)
+
+**Out of scope (deferred):**
+- Recruiter-level attribution (defer until a candidate assignment model exists — likely Epic 4)
+- Pushing CBLAero candidates *back* to Clay (separate outbound enrichment flow already sketched in architecture.md — remains a future Epic 5 scoring capability)
+- Pull-based Clay API integration (we chose push because Clay's HTTP API column is the natural mechanism)
+- Promoting `education`, `languages`, `num_followers`, or other `enrichlinkedin_data.*` subfields into typed columns (stays in `extra_attributes.clay.*` until a query use case lands)
+- Admin UI for rotating `CLAY_WEBHOOK_SECRET` at runtime (rotate via env var + redeploy for MVP)
+
+**Implementation Notes:**
+- New env vars: `CLAY_WEBHOOK_SECRET`, `CLAY_DEFAULT_ASSIGNEE_EMAIL`, `CLAY_EMAIL_FIELD` (default `email`), `CLAY_PHONE_FIELD` (default `phone`), `CLAY_WEBHOOK_DEBUG` (default `true` during rollout)
+- New route: [src/app/api/webhooks/clay/route.ts](src/app/api/webhooks/clay/route.ts) — handles POST, validates bearer token, normalizes batch-vs-single payloads, delegates to the mapper + shared ingestion path
+- New module: [src/modules/ingestion/clay-mapper.ts](src/modules/ingestion/clay-mapper.ts) — pure `mapClayRowToCandidate(row, config)` and `computeClayFingerprint(row, config)` functions. No I/O, fully unit-testable. Probes multiple nested-blob keys (`enrichlinkedin_data`, `Enrich person`, `linkedin`, etc.) for shape tolerance.
+- Migration: [supabase/migrations/2026-04-15-story-2-8-clay-webhook.sql](supabase/migrations/2026-04-15-story-2-8-clay-webhook.sql) — adds `candidates.source_recruiter_actor_id text` + partial index + redefines `upsert_candidate_batch` RPC to include the new column in both insert branches and preserve it via `coalesce(existing, excluded)` on update
+- `mapToCandidateRow` in [src/modules/ingestion/index.ts](src/modules/ingestion/index.ts) extended with a single line reading `sourceRecruiterActorId` (backward compatible — non-Clay callers simply don't set it)
+- 53 tests: 38 pure mapper tests in [src/modules/__tests__/clay-mapper.test.ts](src/modules/__tests__/clay-mapper.test.ts) (includes the real Michaela Ealey production payload as a regression fixture) + 15 webhook integration tests in [src/app/api/webhooks/clay/__tests__/route.test.ts](src/app/api/webhooks/clay/__tests__/route.test.ts)
+- Clay UI configuration: edit the HTTP API column → method `POST`, URL `{CBL_APP_URL}/api/webhooks/clay`, headers `Authorization: Bearer ${CLAY_WEBHOOK_SECRET}` and `Content-Type: application/json`, body = full row payload (Clay's default dynamic body works — it emits the nested enrichment blob + sidecar columns automatically)
+- Backfill of the ~9,000 existing rows: re-fire the Clay HTTP API column on all rows in the table via "Run on all rows" from the column menu. The same webhook handles net-new rows and backfill uniformly; fingerprint idempotency prevents duplicate work on second re-runs.
+
 ## Epic 3: Outreach Orchestration and Candidate Engagement
 
 Create compliant communication workflows for outbound outreach and inbound candidate response at individual and campaign scale.
