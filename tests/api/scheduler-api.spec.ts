@@ -1,31 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { issueSessionToken } from '@/modules/auth/session';
-
-// Helper to get a valid admin session token and cookie
-async function getAuthHeaders() {
-  const { token } = await issueSessionToken({
-    actorId: 'test-admin',
-    email: 'admin@cblsolutions.com',
-    tenantId: process.env.CBL_APP_TENANT_ID || 'cbl-aero',
-    role: 'admin',
-    rememberDevice: true,
-  });
-  return {
-    headers: {
-      'x-active-client-id': process.env.CBL_APP_TENANT_ID || 'cbl-aero',
-      'Cookie': `cbl_session=${token}`,
-    },
-  };
-}
 
 // Note: These tests assume the dev server is running on localhost:3000
 // Run 'npm run dev' in another terminal before running tests
 
 describe('Scheduler API Tests', () => {
   describe('GET /api/internal/admin/scheduler/definitions', () => {
-    it('should return 200 with scheduler definitions (auth)', async () => {
-      const auth = await getAuthHeaders();
-      const response = await fetch('http://localhost:3000/api/internal/admin/scheduler/definitions', auth);
+    it('should return 200 with scheduler definitions', async () => {
+      const response = await fetch('http://localhost:3000/api/internal/admin/scheduler/definitions');
       expect(response.status).toBe(200);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
@@ -33,7 +14,9 @@ describe('Scheduler API Tests', () => {
     });
 
     it('should handle unauthorized access', async () => {
+      // Test without auth headers - assuming auth is required
       const response = await fetch('http://localhost:3000/api/internal/admin/scheduler/definitions');
+      // May return 401 or redirect to login
       expect([401, 302, 403]).toContain(response.status);
     });
   });
