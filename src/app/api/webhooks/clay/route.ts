@@ -39,9 +39,6 @@ import {
   type ClayMapperConfig,
 } from '@/modules/ingestion/clay-mapper';
 import {
-  createSyncRun,
-  completeSyncRun,
-  failSyncRun,
   recordSyncFailure,
   batchUpsertCandidatesFromATS,
   DEFAULT_TENANT_ID,
@@ -156,7 +153,6 @@ interface RowOutcome {
 async function processRow(
   rawRow: Record<string, unknown>,
   config: ClayMapperConfig,
-  runId: string | null,
 ): Promise<RowOutcome> {
   // 1. Compute fingerprint (Story 1.11 gate — mandatory first step per development-standards §3)
   const fingerprint = computeClayFingerprint(rawRow, config);
@@ -199,7 +195,7 @@ async function processRow(
   try {
     batchResult = await batchUpsertCandidatesFromATS([mapped as unknown as Record<string, unknown>]);
   } catch (upsertErr) {
-    if (runId) recordSyncFailure('clay_enrichment', String(mapped.email ?? 'unknown'), upsertErr, runId);
+    recordSyncFailure('clay_enrichment', String(mapped.email ?? 'unknown'), upsertErr);
     return {
       status: 'error',
       error: `Upsert transport error: ${upsertErr instanceof Error ? upsertErr.message : String(upsertErr)}`,
@@ -304,10 +300,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── Sync run scaffold ──
-  const runId = await createSyncRun('clay_enrichment');
-
   // ── Process rows ──
+  // No per-request sync_run is created here. Clay webhooks can fire thousands
+  // of times during a backfill, and creating a sync_run per request pollutes
+  // the admin dashboard with unreadable noise. Instead, after processing all
+  // rows in the request, we call the `upsert_clay_hourly_sync_run` RPC once
+  // which atomically increments a single row keyed by the current hour bucket
+  // (see migration 2026-04-15-story-2-8-clay-hourly-bucket.sql). The dashboard
+  // shows one Clay row per hour with rolling totals, matching the observability
+  // pattern the product owner asked for on 2026-04-15.
   const config: ClayMapperConfig = {
     emailField: CLAY_EMAIL_FIELD,
     phoneField: CLAY_PHONE_FIELD,
@@ -320,7 +321,7 @@ export async function POST(request: NextRequest) {
 
   for (const row of rows) {
     try {
-      const outcome = await processRow(row, config, runId);
+      const outcome = await processRow(row, config);
       outcomes.push(outcome);
       if (outcome.status === 'accepted') counts.accepted += 1;
       else if (outcome.status === 'error') counts.errored += 1;
@@ -331,24 +332,31 @@ export async function POST(request: NextRequest) {
       counts.errored += 1;
       outcomes.push({ status: 'error', error: rowErr instanceof Error ? rowErr.message : String(rowErr) });
       console.error('[ClayWebhook] Uncaught row error:', rowErr);
-      if (runId) recordSyncFailure('clay_enrichment', 'row-uncaught', rowErr, runId);
+      recordSyncFailure('clay_enrichment', 'row-uncaught', rowErr);
     }
   }
 
-  // ── Close sync run ──
-  if (runId) {
+  // ── Upsert hourly bucket ──
+  // Single atomic RPC that inserts-or-increments a sync_runs row keyed by
+  // (source='clay_enrichment', started_at=date_trunc('hour', now())). Errors
+  // are swallowed — Clay observability must never block candidate ingestion.
+  let bucketId: string | null = null;
+  if (isSupabaseConfigured()) {
     try {
-      if (counts.errored > 0 && counts.accepted === 0 && counts.skipped === 0) {
-        await failSyncRun(runId, 'All rows errored — see sync_run_errors for details');
-      } else {
-        await completeSyncRun(runId, {
-          succeeded: counts.accepted,
-          failed: counts.errored,
-          total: rows.length,
-        });
+      const db = getSupabaseAdminClient();
+      const { data, error } = await db.rpc('upsert_clay_hourly_sync_run', {
+        p_accepted: counts.accepted,
+        p_skipped: counts.skipped,
+        p_errored: counts.errored,
+      });
+      if (error) {
+        console.error('[ClayWebhook] Hourly bucket upsert failed:', error.message);
+      } else if (data) {
+        bucketId = data as string;
       }
-    } catch (runErr) {
-      console.error('[ClayWebhook] Failed to close sync run:', runErr instanceof Error ? runErr.message : runErr);
+    } catch (bucketErr) {
+      console.error('[ClayWebhook] Hourly bucket upsert transport error:',
+        bucketErr instanceof Error ? bucketErr.message : bucketErr);
     }
   }
 
@@ -359,7 +367,7 @@ export async function POST(request: NextRequest) {
     accepted: counts.accepted,
     skipped: counts.skipped,
     errored: counts.errored,
-    run_id: runId,
+    bucket_run_id: bucketId,
     duration_ms: Date.now() - startedAt,
     // Per-row outcomes included for debugging — trimmed to first 20 entries to keep response small
     outcomes: outcomes.slice(0, 20),

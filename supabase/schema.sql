@@ -1668,6 +1668,47 @@ create table if not exists cblaero_app.sync_runs (
 create index if not exists idx_sync_runs_started_at
   on cblaero_app.sync_runs (started_at desc);
 
+-- Story 2.8: partial unique index for Clay hourly bucket aggregation.
+-- Only Clay respects hourly bucketing — every webhook within the same hour
+-- increments one pre-existing row instead of inserting a new one. Other
+-- ingestion sources (ATS, Ceipal, email, onedrive, dedup, role-enrichment)
+-- keep their per-run pattern unchanged.
+create unique index if not exists uq_sync_runs_clay_hourly
+  on cblaero_app.sync_runs (source, started_at)
+  where source = 'clay_enrichment';
+
+-- Story 2.8: hourly bucket upsert RPC for Clay webhook.
+-- Called by the /api/webhooks/clay route handler on every Clay webhook request.
+-- Uses ON CONFLICT DO UPDATE against the partial unique index above for atomic
+-- increment semantics (no race conditions even under concurrent webhook fire).
+create or replace function cblaero_app.upsert_clay_hourly_sync_run(
+  p_accepted int,
+  p_skipped int,
+  p_errored int
+) returns uuid language plpgsql as $$
+declare
+  v_id uuid;
+  v_bucket timestamptz := date_trunc('hour', now() at time zone 'utc') at time zone 'utc';
+begin
+  insert into cblaero_app.sync_runs (
+    source, status, started_at, completed_at,
+    succeeded, failed, total
+  ) values (
+    'clay_enrichment', 'complete', v_bucket, now(),
+    p_accepted, p_errored, p_accepted + p_skipped + p_errored
+  )
+  on conflict (source, started_at) where source = 'clay_enrichment' do update
+    set succeeded    = cblaero_app.sync_runs.succeeded + excluded.succeeded,
+        failed       = cblaero_app.sync_runs.failed + excluded.failed,
+        total        = cblaero_app.sync_runs.total + excluded.total,
+        completed_at = now(),
+        status       = 'complete'
+  returning id into v_id;
+  return v_id;
+end; $$;
+
+grant execute on function cblaero_app.upsert_clay_hourly_sync_run(int, int, int) to service_role;
+
 -- Story 2.4b: Add run_id FK to sync_errors (nullable — errors can exist without a run)
 -- ON DELETE SET NULL: when a sync_run is pruned, orphaned errors keep their data with null run_id
 alter table cblaero_app.sync_errors
