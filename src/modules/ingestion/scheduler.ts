@@ -245,7 +245,8 @@ export class GlobalScheduler {
 
   // DN7: Event-driven worker — consumes pending outbox events and executes the corresponding jobs.
   // AC 3: Workers are consumers of scheduler-issued outbox events; they do not own timer logic.
-  async processOutbox(): Promise<{ outcomes: ScheduleOutcome[] }> {
+  // DN2: optional scheduleRunId scopes claim to a specific run's outbox events (used by admin trigger endpoint)
+  async processOutbox(options?: { scheduleRunId?: string }): Promise<{ outcomes: ScheduleOutcome[] }> {
     if (!isSupabaseConfigured()) {
       return { outcomes: [] };
     }
@@ -253,12 +254,17 @@ export class GlobalScheduler {
     const db = getSupabaseAdminClient();
     const nowIso = new Date().toISOString();
 
-    // Atomically claim pending outbox events using FOR UPDATE SKIP LOCKED
-    const { data: claimedEvents, error: claimError } = await db.rpc('claim_pending_outbox_events', {
+    const rpcParams: Record<string, unknown> = {
       p_tenant_id: DEFAULT_TENANT_ID,
       p_now: nowIso,
       p_limit: 20,
-    });
+    };
+    if (options?.scheduleRunId) {
+      rpcParams.p_schedule_run_id = options.scheduleRunId;
+    }
+
+    // Atomically claim pending outbox events using FOR UPDATE SKIP LOCKED
+    const { data: claimedEvents, error: claimError } = await db.rpc('claim_pending_outbox_events', rpcParams);
 
     if (claimError) {
       console.error('[GlobalScheduler] Failed to claim outbox events:', claimError.message);
@@ -436,45 +442,13 @@ export class GlobalScheduler {
     }
   }
 
-  // DN6: Insert a new policy_versions row when a job's cron expression changes in code — satisfies AC 2
+  // DN6: delegates to the exported standalone function so the admin PATCH route can call it without GlobalScheduler
   private async createPolicyVersionForCronChange(
     policyFamily: string,
     policyKey: string,
     newCronExpression: string,
   ): Promise<number | null> {
-    const db = getSupabaseAdminClient();
-
-    const { data: registry, error: registryError } = await db
-      .from('policy_registry')
-      .select('id')
-      .eq('family', policyFamily)
-      .eq('key', policyKey)
-      .limit(1)
-      .maybeSingle();
-
-    if (registryError || !registry) {
-      if (registryError) console.error('[GlobalScheduler] Failed to find policy registry for version creation:', registryError.message);
-      return null;
-    }
-
-    const { data: newVersion, error: insertError } = await db
-      .from('policy_versions')
-      .insert({
-        policy_id: registry.id,
-        value: { cron_expression: newCronExpression },
-        effective_from: new Date().toISOString(),
-        created_by_actor_id: 'system:scheduler',
-      })
-      .select('id')
-      .single();
-
-    if (insertError || !newVersion) {
-      if (insertError) console.error('[GlobalScheduler] Failed to create policy version for cron change:', insertError.message);
-      return null;
-    }
-
-    console.log(JSON.stringify({ event: 'policy_version_created', family: policyFamily, key: policyKey, version_id: newVersion.id, new_cron: newCronExpression }));
-    return newVersion.id;
+    return createPolicyVersionForCronChange(policyFamily, policyKey, newCronExpression);
   }
 
   private async resolveCurrentPolicyVersionId(policyFamily: string, policyKey: string): Promise<number | null> {
@@ -616,4 +590,52 @@ export class GlobalScheduler {
     const db = getSupabaseAdminClient();
     await db.from('schedule_definitions').update({ next_run_at: nextRunAt, updated_at: new Date().toISOString() }).eq('id', definitionId);
   }
+}
+
+// ── Standalone public exports used by admin API routes ────────────────────────
+
+/**
+ * Insert a new policy_versions row when a job's cron expression changes.
+ * Exported so the admin PATCH route can call it directly without GlobalScheduler.
+ * Returns the new version id, or null if the registry entry doesn't exist.
+ */
+export async function createPolicyVersionForCronChange(
+  policyFamily: string,
+  policyKey: string,
+  newCronExpression: string,
+  createdByActorId = 'system:scheduler',
+): Promise<number | null> {
+  const db = getSupabaseAdminClient();
+
+  const { data: registry, error: registryError } = await db
+    .from('policy_registry')
+    .select('id')
+    .eq('family', policyFamily)
+    .eq('key', policyKey)
+    .limit(1)
+    .maybeSingle();
+
+  if (registryError || !registry) {
+    if (registryError) console.error('[scheduler] Failed to find policy registry for version creation:', registryError.message);
+    return null;
+  }
+
+  const { data: newVersion, error: insertError } = await db
+    .from('policy_versions')
+    .insert({
+      policy_id: registry.id,
+      value: { cron_expression: newCronExpression },
+      effective_from: new Date().toISOString(),
+      created_by_actor_id: createdByActorId,
+    })
+    .select('id')
+    .single();
+
+  if (insertError || !newVersion) {
+    if (insertError) console.error('[scheduler] Failed to create policy version for cron change:', insertError.message);
+    return null;
+  }
+
+  console.log(JSON.stringify({ event: 'policy_version_created', family: policyFamily, key: policyKey, version_id: newVersion.id, new_cron: newCronExpression }));
+  return newVersion.id;
 }

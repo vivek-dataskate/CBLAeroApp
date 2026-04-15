@@ -2208,11 +2208,12 @@ $$;
 
 grant execute on function cblaero_app.claim_due_schedules(text, timestamptz, timestamptz, integer) to service_role;
 
--- DN7: Atomic outbox claim function — event-driven worker consumes pending events
+-- DN7/DN2: Atomic outbox claim. p_schedule_run_id (optional) scopes to a specific run's events.
 create or replace function cblaero_app.claim_pending_outbox_events(
-  p_tenant_id text,
-  p_now timestamptz,
-  p_limit integer default 20
+  p_tenant_id       text,
+  p_now             timestamptz,
+  p_limit           integer default 20,
+  p_schedule_run_id uuid    default null
 )
 returns setof cblaero_app.outbox_events
 language plpgsql
@@ -2230,6 +2231,7 @@ begin
     from cblaero_app.outbox_events
     where tenant_id = p_tenant_id
       and status = 'pending'
+      and (p_schedule_run_id is null or schedule_run_id = p_schedule_run_id)
     order by created_at asc
     for update skip locked
     limit p_limit
@@ -2238,7 +2240,8 @@ begin
 end;
 $$;
 
-grant execute on function cblaero_app.claim_pending_outbox_events(text, timestamptz, integer) to service_role;
+-- Grant for both old and new signature (CREATE OR REPLACE drops the old one, but explicit grant is safe)
+grant execute on function cblaero_app.claim_pending_outbox_events(text, timestamptz, integer, uuid) to service_role;
 
 -- Seed: availability refresh cadence policy
 insert into cblaero_app.policy_registry (family, key, description)
