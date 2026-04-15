@@ -87,7 +87,8 @@ describe("auth callback route", () => {
     const response = await GET(request);
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe("https://aerodelivery.onrender.com/dashboard");
+    const appUrl = process.env.CBL_APP_URL || 'http://localhost:3000';
+    expect(response.headers.get("location")).toBe(`${appUrl}/dashboard`);
 
     const setCookie = response.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cbl_session=session-token");

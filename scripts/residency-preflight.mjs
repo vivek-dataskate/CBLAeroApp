@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
+import { config } from 'dotenv';
 import residencyPolicy from "./data-residency-policy.cjs";
+
+// Load .env.local
+config({ path: '.env.local' });
 
 const { validateUsaDataResidencyPolicyFromEnv } = residencyPolicy;
 const validation = validateUsaDataResidencyPolicyFromEnv(process.env);

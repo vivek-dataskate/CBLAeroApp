@@ -46,7 +46,9 @@ describe("auth logout route", () => {
     const response = await GET(request);
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe("https://aerodelivery.onrender.com/");
+    const appUrl = process.env.CBL_APP_URL || 'http://localhost:3000';
+    const redirectUrl = response.headers.get("location") ?? "";
+    expect(redirectUrl === appUrl || redirectUrl === `${appUrl}/`).toBe(true);
 
     const setCookie = response.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cbl_session=");

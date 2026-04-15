@@ -16,7 +16,7 @@ describe("story 1.2 auth flow coverage", () => {
     process.env = {
       ...ORIGINAL_ENV,
       NODE_ENV: "test",
-      CBL_APP_URL: "https://aerodelivery.onrender.com",
+      CBL_APP_URL: "http://localhost:3000",
       CBL_SSO_ISSUER: "https://login.microsoftonline.com/test-tenant-id",
       CBL_SSO_CLIENT_ID: "test-client-id",
       CBL_SSO_CLIENT_SECRET: "test-client-secret",
@@ -36,8 +36,9 @@ describe("story 1.2 auth flow coverage", () => {
     expect(authorizationUrl.pathname).toBe("/test-tenant-id/oauth2/v2.0/authorize");
     expect(authorizationUrl.searchParams.get("client_id")).toBe("test-client-id");
     expect(authorizationUrl.searchParams.get("response_type")).toBe("code");
+    const appUrl = process.env.CBL_APP_URL || 'http://localhost:3000';
     expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
-      "https://aerodelivery.onrender.com/api/auth/callback",
+      `${appUrl}/api/auth/callback`,
     );
     expect(authorizationUrl.searchParams.get("scope")).toBe("openid profile email");
     expect(authorizationUrl.searchParams.get("max_age")).toBeNull();
