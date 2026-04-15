@@ -35,7 +35,7 @@ test.describe('Admin Scheduler Dashboard', () => {
       // Verify update
       await expect(page.locator('text=Updated successfully')).toBeVisible();
     } else {
-      test.skip('No scheduler definitions to edit');
+      test.skip();
     }
   });
 
@@ -54,7 +54,7 @@ test.describe('Admin Scheduler Dashboard', () => {
       // Verify run started
       await expect(page.locator('text=Run triggered')).toBeVisible();
     } else {
-      test.skip('No scheduler definitions to trigger');
+      test.skip();
     }
   });
 
