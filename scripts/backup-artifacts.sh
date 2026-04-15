@@ -26,7 +26,7 @@ rsync -a /workspaces/CBLAeroApp/_bmad/project-context.md "$BACKUP_DIR/project-co
 rsync -a /workspaces/CBLAeroApp/_bmad/bmm/config.yaml "$BACKUP_DIR/_bmad-config.yaml" 2>/dev/null || true
 
 # Custom skills and instructions (from .gitignore exceptions)
-rsync -a /workspaces/CBLAeroApp/.claude/skills/ "$BACKUP_DIR/.claude-skills/" 2>/dev/null || true
+rsync -a /workspaces/CBLAeroApp/.github/skills/git-push-pr/ "$BACKUP_DIR/.github-skills-git-push-pr/" 2>/dev/null || true
 rsync -a /workspaces/CBLAeroApp/.github/instructions/ "$BACKUP_DIR/.github-instructions/" 2>/dev/null || true
 rsync -a /workspaces/CBLAeroApp/.vscode/mcp.json "$BACKUP_DIR/.vscode-mcp.json" 2>/dev/null || true
 

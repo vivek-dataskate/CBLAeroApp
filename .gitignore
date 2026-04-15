@@ -65,8 +65,8 @@ _bmad-output/
 # Claude / Cowork session data and skills
 .claude/
 # Exception: Custom skills should be committed
-!.claude/skills/
-!.claude/skills/**/*.md
+!.github/skills/git-push-pr/
+!.github/skills/git-push-pr/SKILL.md
 
 # Project management docs (contain business/product details)
 PROJECT_STATUS.md
