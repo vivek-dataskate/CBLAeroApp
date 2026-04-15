@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "residency:preflight": "node ./scripts/residency-preflight.mjs"
   },
   "dependencies": {
