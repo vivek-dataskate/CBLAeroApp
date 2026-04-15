@@ -145,7 +145,7 @@ Full status: see \`PROJECT_STATUS.md\`
 ### Key Artifact Paths
 | Artifact | Location |
 |----------|----------|
-| Stories (23) | \`_bmad-output/stories/\` |
+| Stories (24) | `_bmad-output/stories/` |
 | Epics / PRD / Architecture | \`_bmad-output/\` |
 | BMAD agents & workflows | \`_bmad/\` |
 | Sprint status | \`_bmad-output/sprint-status.yaml\` |
