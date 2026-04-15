@@ -1,9 +1,8 @@
 # Ignore all default BMAD skills — only commit CBL-customised skills
 *
 !.gitignore
-!bmad-create-story/
-!bmad-create-story/**
-!bmad-dev-story/
+!git-push-pr/
+!git-push-pr/**
 !bmad-dev-story/**
 !bmad-code-review/
 !bmad-code-review/**
