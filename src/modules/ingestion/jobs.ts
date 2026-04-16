@@ -793,6 +793,8 @@ export class DedupWorkerJob implements SchedulerJob {
               confidence_score: bestMatch.confidence.score,
               rationale: bestMatch.confidence.rationale,
             });
+            // Promote winner out of pending_dedup so it's not re-processed
+            await updateCandidateIngestionState(winner.id, 'active');
             // H2 fix: record fingerprint for WINNER (merge RPC migrates loser's fingerprints to winner)
             if (identityHash) {
               await recordFingerprint({
