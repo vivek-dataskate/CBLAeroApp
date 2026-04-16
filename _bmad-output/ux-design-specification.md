@@ -110,9 +110,13 @@ Design constraint: at 1M+ records, candidate search and list views must use curs
 One global schedule console governs recurring business jobs. It is the configuration surface for business cadences, not a dump of every internal timer.
 
 - **Business schedules shown:** ATS connector syncs, recruiter inbox scans, candidate refresh sweeps, daily recruiter digests, nightly FAA/compliance sweeps, and recurring operational guardrail checks.
-- **Each schedule row shows:** tenant/customer scope, job type, cadence, timezone, next run, last run, paused/active state, latest run status, and policy version.
-- **Edit flow:** admin changes cadence or pause/resume state -> API validates allowed bounds and tenant scope -> system creates a new versioned schedule/policy record -> only subsequent runs use the new version.
+- **Each schedule row shows:** human-readable job name, human-readable cadence (e.g. "Every 15 minutes", "Daily at 2:00 AM UTC"), enabled/paused state, next run, last run time, and latest run status. Raw cron expression is available as a tooltip for technical reference.
+- **Schedule cadences are code-defined** — the schedule column is read-only in the UI. Admins can pause/resume jobs, override the next run time, or trigger immediate execution, but cannot change cron expressions from the dashboard (prevents code/DB drift).
+- **Edit flow:** admin pauses/resumes a job or overrides next_run_at -> API validates tenant scope -> system updates the schedule definition. Cron expression changes are code-deployed only, creating a new versioned policy record on bootstrap sync.
 - **Non-schedulable timing controls:** retry backoffs and outreach cooldown windows are shown as read-only policy hints or in contextual warnings; they are not editable as recurring schedules in this console.
+
+**Admin Console Layout Pattern**
+The admin console uses **collapsible card sections** (`CollapsibleCard` component) to organize its multiple modules (Scheduler Status, Sync Runs, AI Costs, User & Team Governance). Each section has a clickable header with a chevron toggle. Sections marked `defaultOpen` are expanded on page load; others are collapsed. This reduces visual clutter and lets admins focus on the section they need. See `docs/dashboard-ui-standards.md` for the component specification.
 
 **2. "See-Before-Share" → "Do Not Disturb Control Panel"**
 Sarah's portal is less job board, more preference enforcer. She sets exact criteria (role, pay, type rating, contact window). System promise: "We only contact you when it's near-perfect, max once per week." Transparency: shows her contact history, who has her data, how to revoke.

@@ -10,11 +10,11 @@ so that I can manage recurring job cadences, run any job on demand, and monitor 
 
 ## Acceptance Criteria
 
-1. **Given** an admin views the admin dashboard **When** the Scheduler Status card loads **Then** it shows all 7 registered jobs with: job key, human name, cron expression, enabled/paused state, next scheduled run, last run time, and last run status (completed/failed/skipped).
+1. **Given** an admin views the admin dashboard **When** the Scheduler Status card loads **Then** it shows all 7 registered jobs with: job key, human-readable name, human-readable schedule (e.g. "Every 15 minutes", "Daily at 2:00 AM UTC"), enabled/paused state, next scheduled run, last run time, and last run status (completed/failed/skipped). The schedule column is read-only (cron expressions are code-defined, not admin-editable). Raw cron is visible as a tooltip on hover.
 
 2. **Given** an admin clicks "Run now" on any job **When** the request is submitted **Then** the scheduler immediately backdates `next_run_at` to the past, triggering execution on the next scheduler poll (within 15 min), and a success toast confirms the action.
 
-3. **Given** an admin changes a job's cron expression **When** the validated update is saved **Then** a new `policy_versions` row is created for that job's policy family/key, `schedule_definitions.cron_expression` is updated, `next_run_at` is recalculated from the new schedule, and subsequent runs use the new cadence.
+3. ~~**Given** an admin changes a job's cron expression **When** the validated update is saved **Then** a new `policy_versions` row is created for that job's policy family/key.~~ **REMOVED**: Cron expressions are code-defined in `registerIngestionJobs()` and synced to DB on scheduler bootstrap. The PATCH endpoint still supports `cron_expression` for programmatic use but the UI no longer exposes inline cron editing to prevent code/DB drift.
 
 4. **Given** an admin toggles a job's enabled state **When** saved **Then** `schedule_definitions.enabled` is updated; disabled jobs are skipped by `claim_due_schedules()` with no further runs until re-enabled.
 
@@ -59,7 +59,7 @@ so that I can manage recurring job cadences, run any job on demand, and monitor 
   - [x] 5.3 Status badge: `completed` → green, `failed` → red, `skipped` → yellow, `claimed/started` → blue, `—` (never run) → gray.
   - [x] 5.4 "Run now" button per row: calls `POST /api/internal/admin/scheduler/definitions/[id]/trigger`, shows spinner, displays toast on result.
   - [x] 5.5 "Pause" / "Enable" toggle button: calls `PATCH` with `{ enabled: false/true }`, refreshes row.
-  - [x] 5.6 "Edit schedule" inline: clicking the cron expression opens an inline edit input. On save, validates and calls `PATCH` with `{ cron_expression: ... }`.
+  - [x] 5.6 Schedule column displays human-readable labels via `cronToHuman()` (e.g. "Every 15 minutes", "Daily at 2:00 AM UTC"). Raw cron shown as tooltip. Read-only — no inline editing.
   - [x] 5.7 "Set next run" button: opens a datetime input. On save, calls `PATCH` with `{ next_run_at: ... }`.
   - [x] 5.8 All mutations refresh the card on success. Show row-level error on failure (don't clear the whole card).
   - [x] 5.9 Follow brand standards: Poppins font, navy `#1a174d` headings, blue `#1d87c8` action buttons, white card background.

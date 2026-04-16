@@ -190,6 +190,26 @@ Or with a border:
 </article>
 ```
 
+### Collapsible Card
+
+Used on admin pages with multiple sections to reduce visual clutter. Each section has a clickable header with a chevron indicator that toggles content visibility.
+
+```tsx
+<CollapsibleCard title="Section Title" defaultOpen>
+  {/* Content */}
+</CollapsibleCard>
+```
+
+Implementation: `src/app/dashboard/admin/CollapsibleCard.tsx`
+
+- Header: full-width clickable button with section title (same `text-xs font-semibold uppercase tracking-wide text-gray-400` as standard section headers) and a chevron icon (`h-4 w-4 text-gray-400`)
+- Chevron rotates 180 degrees on open (via `transition-transform duration-200`)
+- `defaultOpen` prop controls initial state; default is collapsed
+- Card chrome: same `rounded-xl border border-gray-200 bg-white` as Primary Card
+- Content padding: `px-5 pb-5` when open (header has its own `px-5 py-4`)
+
+Child components inside a `CollapsibleCard` should **not** render their own section `<h3>` header — the card title replaces it.
+
 ### Info/Alert Banner
 
 ```tsx
@@ -337,5 +357,6 @@ When creating a new dashboard page, verify:
 7. No `emerald-*` or `cyan-*` colors (use `cbl-navy`, `cbl-blue`, `cbl-dark`, `cbl-light`)
 8. Cards use `rounded-xl border-gray-200`
 9. Buttons use `rounded-lg`
+12. Admin sections use `CollapsibleCard` with appropriate `defaultOpen` state
 10. All text is `text-xs` (12px) or larger
 11. Poppins font loaded via Google Fonts import in globals.css

@@ -14,6 +14,7 @@ import AdminGovernanceConsole from "./AdminGovernanceConsole";
 import AiCostDashboard from "./AiCostDashboard";
 import SyncRunSummaryCard from "./SyncRunSummaryCard";
 import SchedulerStatusCard from "./SchedulerStatusCard";
+import CollapsibleCard from "./CollapsibleCard";
 
 type AdminDashboardSearchParams = {
   activeClientId?: string | string[];
@@ -125,30 +126,29 @@ export default async function AdminDashboardPage({
 
         {/* Scheduler status */}
         <div className="mt-4">
-          <Card>
+          <CollapsibleCard title="Scheduler Status" defaultOpen>
             <SchedulerStatusCard />
-          </Card>
+          </CollapsibleCard>
         </div>
 
         {/* Two-column: Sync runs + AI costs */}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <Card>
+          <CollapsibleCard title="Sync Runs" defaultOpen>
             <SyncRunSummaryCard />
-          </Card>
-          <Card>
-            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-400">AI Costs</h3>
+          </CollapsibleCard>
+          <CollapsibleCard title="AI Costs">
             <AiCostDashboard />
-          </Card>
+          </CollapsibleCard>
         </div>
 
         {/* User governance */}
         <div className="mt-4">
-          <Card>
+          <CollapsibleCard title="User & Team Governance">
             <AdminGovernanceConsole
               tenantId={activeClientId}
               initialPayload={{ users, invitations, adminActions, stepUpAttempts }}
             />
-          </Card>
+          </CollapsibleCard>
         </div>
       </main>
 

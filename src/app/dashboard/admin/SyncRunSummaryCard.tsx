@@ -80,10 +80,6 @@ export default function SyncRunSummaryCard() {
 
   return (
     <div>
-      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-400">
-        Sync Runs &mdash; {monthLabel}
-      </h3>
-
       {loading && (
         <div className="flex items-center justify-center py-8">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cbl-navy border-t-transparent" />
