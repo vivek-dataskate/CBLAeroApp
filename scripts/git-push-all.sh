@@ -92,6 +92,9 @@ git checkout "$BASE_BRANCH"
 git pull "$REMOTE" "$BASE_BRANCH"
 ok "Pulled latest ${BASE_BRANCH}"
 
+# Prune stale remote tracking refs
+git fetch --prune
+
 # Delete local feature branch if it still exists
 if git rev-parse --verify "$CURRENT" >/dev/null 2>&1; then
   info "Deleting local branch ${CURRENT}..."
