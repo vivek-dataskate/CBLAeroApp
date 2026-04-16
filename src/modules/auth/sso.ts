@@ -164,6 +164,17 @@ export function isRememberDeviceRequested(value: string | null): boolean {
   return value === "1" || value === "true";
 }
 
+/**
+ * Build the Microsoft Entra end-session URL so that signing out
+ * also terminates the IdP session (prevents silent re-auth).
+ */
+export function getEntraLogoutUrl(postLogoutRedirectUri: string): URL {
+  const config = getSsoConfig();
+  const logoutUrl = new URL(`${config.issuer}/oauth2/v2.0/logout`);
+  logoutUrl.searchParams.set("post_logout_redirect_uri", postLogoutRedirectUri);
+  return logoutUrl;
+}
+
 export function getSsoConfig(): SsoConfig {
   const authorityBase = readRequiredEnv("CBL_SSO_ISSUER")
     .replace(/\/$/, "")
@@ -271,6 +282,12 @@ export async function createSsoAuthorizationRequest(options: {
   authorizationUrl.searchParams.set("scope", "openid profile email");
   authorizationUrl.searchParams.set("state", state);
   authorizationUrl.searchParams.set("nonce", nonce);
+
+  // Force credential re-entry for regular sign-in.
+  // "Remember Device" skips this so Entra can SSO silently.
+  if (!rememberDevice) {
+    authorizationUrl.searchParams.set("prompt", "login");
+  }
 
   return {
     authorizationUrl,

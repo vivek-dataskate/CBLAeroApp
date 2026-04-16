@@ -5,6 +5,7 @@ const authMocks = vi.hoisted(() => ({
   validateActiveSession: vi.fn(),
   revokeSession: vi.fn(),
   shouldUseSecureCookies: vi.fn(() => false),
+  getEntraLogoutUrl: vi.fn((postLogoutUri: string) => new URL(`https://login.microsoftonline.com/tenant/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(postLogoutUri)}`)),
 }));
 
 vi.mock("@/modules/auth", () => ({
@@ -12,6 +13,7 @@ vi.mock("@/modules/auth", () => ({
   validateActiveSession: authMocks.validateActiveSession,
   revokeSession: authMocks.revokeSession,
   shouldUseSecureCookies: authMocks.shouldUseSecureCookies,
+  getEntraLogoutUrl: authMocks.getEntraLogoutUrl,
 }));
 
 import { GET } from "../route";
@@ -46,9 +48,9 @@ describe("auth logout route", () => {
     const response = await GET(request);
 
     expect(response.status).toBe(307);
-    const appUrl = process.env.CBL_APP_URL || 'http://localhost:3000';
     const redirectUrl = response.headers.get("location") ?? "";
-    expect(redirectUrl === appUrl || redirectUrl === `${appUrl}/`).toBe(true);
+    expect(redirectUrl).toContain("login.microsoftonline.com");
+    expect(redirectUrl).toContain("post_logout_redirect_uri");
 
     const setCookie = response.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("cbl_session=");

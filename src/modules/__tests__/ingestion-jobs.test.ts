@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock all external dependencies
 const mocks = vi.hoisted(() => ({
   fetchCeipalApplicants: vi.fn().mockResolvedValue([]),
-  mapCeipalApplicantToCandidate: vi.fn((a: any) => ({ firstName: a.first_name, email: a.email_address, source: 'ceipal' })),
+  mapCeipalApplicantToCandidate: vi.fn((a: any) => ({ firstName: a.first_name, email: a.email_address, source: 'ceipal', ceipalId: a.email_address })),
   parseInbox: vi.fn().mockResolvedValue([]),
   isSupabaseConfigured: vi.fn(() => false),
   getSupabaseAdminClient: vi.fn(),
@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   batchUpsertCandidatesFromATS: vi.fn().mockResolvedValue({ inserted: 0, failed: 0 }),
   isAlreadyProcessed: vi.fn().mockResolvedValue(false),
   recordFingerprint: vi.fn().mockResolvedValue(undefined),
+  recordFingerprintBatch: vi.fn().mockResolvedValue(undefined),
+  checkExistingFingerprints: vi.fn().mockResolvedValue(new Set()),
   loadRecentFingerprints: vi.fn().mockResolvedValue(new Set()),
   computeFileHash: vi.fn().mockReturnValue('mock-hash'),
   getLastCandidateUpdateBySource: vi.fn().mockResolvedValue(undefined),
@@ -63,6 +65,8 @@ vi.mock('@/modules/ingestion/index', () => ({
 vi.mock('@/features/candidate-management/infrastructure/fingerprint-repository', () => ({
   isAlreadyProcessed: mocks.isAlreadyProcessed,
   recordFingerprint: mocks.recordFingerprint,
+  recordFingerprintBatch: mocks.recordFingerprintBatch,
+  checkExistingFingerprints: mocks.checkExistingFingerprints,
   loadRecentFingerprints: mocks.loadRecentFingerprints,
   computeFileHash: mocks.computeFileHash,
 }));
@@ -83,16 +87,22 @@ describe('CeipalIngestionJob', () => {
   });
 
   it('fetches applicants and batch-upserts them', async () => {
-    mocks.fetchCeipalApplicants.mockResolvedValue([
-      { first_name: 'Jane', last_name: 'Doe', email_address: 'jane@test.com' },
-      { first_name: 'John', last_name: 'Smith', email_address: 'john@test.com' },
-    ]);
+    // Page-by-page: first call returns applicants, second returns [] (end of data)
+    mocks.fetchCeipalApplicants
+      .mockResolvedValueOnce([
+        { first_name: 'Jane', last_name: 'Doe', email_address: 'jane@test.com' },
+        { first_name: 'John', last_name: 'Smith', email_address: 'john@test.com' },
+      ]);
+    mocks.checkExistingFingerprints.mockResolvedValue(new Set());
     mocks.batchUpsertCandidatesFromATS.mockResolvedValue({ inserted: 2, failed: 0 });
 
     const job = new CeipalIngestionJob();
     await job.run();
 
-    expect(mocks.fetchCeipalApplicants).toHaveBeenCalledTimes(1);
+    // Called with per-page params: startPage=1, maxPages=1
+    expect(mocks.fetchCeipalApplicants).toHaveBeenCalledWith(
+      expect.objectContaining({ startPage: 1, maxPages: 1 }),
+    );
     expect(mocks.mapCeipalApplicantToCandidate).toHaveBeenCalledTimes(2);
     expect(mocks.batchUpsertCandidatesFromATS).toHaveBeenCalledTimes(1);
     expect(mocks.batchUpsertCandidatesFromATS).toHaveBeenCalledWith(
@@ -105,9 +115,11 @@ describe('CeipalIngestionJob', () => {
   });
 
   it('records sync failure when batch upsert throws', async () => {
-    mocks.fetchCeipalApplicants.mockResolvedValue([
-      { first_name: 'Good', last_name: 'One', email_address: 'good@test.com' },
-    ]);
+    mocks.fetchCeipalApplicants
+      .mockResolvedValueOnce([
+        { first_name: 'Good', last_name: 'One', email_address: 'good@test.com' },
+      ]);
+    mocks.checkExistingFingerprints.mockResolvedValue(new Set());
     mocks.batchUpsertCandidatesFromATS.mockRejectedValue(new Error('batch insert failed'));
 
     const job = new CeipalIngestionJob();

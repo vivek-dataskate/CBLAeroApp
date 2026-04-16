@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   SESSION_COOKIE_NAME,
+  getEntraLogoutUrl,
   revokeSession,
   shouldUseSecureCookies,
   validateActiveSession,
@@ -48,7 +49,10 @@ async function handleLogout(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  const response = NextResponse.redirect(new URL("/", `${getPublicOrigin(request)}/`));
+  const appOrigin = getPublicOrigin(request);
+  const entraLogoutUrl = getEntraLogoutUrl(`${appOrigin}/`);
+
+  const response = NextResponse.redirect(entraLogoutUrl);
   response.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: "",
