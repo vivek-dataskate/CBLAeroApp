@@ -107,14 +107,15 @@ export function parseClayLocation(locationName: string | null | undefined): {
     return { city: parts[0] ?? null, state: parts[1] ?? null };
   }
   if (parts.length === 3) {
-    // Assume last is country when parts[2] looks like a country word.
-    const last = (parts[2] ?? '').toLowerCase();
-    const looksLikeCountry =
-      last === 'united states' || last === 'usa' || last === 'us' || last.length > 0;
-    if (looksLikeCountry) {
-      return { city: parts[0] ?? null, state: parts[1] ?? null };
-    }
+    // P4 (Story 2.8 review): previously this branch had a tautology guard
+    // (`last.length > 0` is always true after empty-part filter) with dead
+    // fall-through. Real-world Clay data (verified against production
+    // payloads on 2026-04-15) always emits 3-part locations as
+    // "City, State, Country" — drop the country token and return the rest.
+    return { city: parts[0] ?? null, state: parts[1] ?? null };
   }
+  // 4+ parts: non-standard shape — leave city/state null and let the raw
+  // location_name survive in `candidates.location` for manual review.
   return { city: null, state: null };
 }
 
@@ -230,6 +231,34 @@ function extractLinkedInBlob(
 }
 
 /**
+ * P6 (Story 2.8 review): coerce a Clay sidecar column value to a trimmed string.
+ * Handles the common non-string shapes Clay can send:
+ *   - string → trim
+ *   - number / boolean → String() + trim (e.g., phone coerced to number by Clay formula)
+ *   - single-element array of string → unwrap + trim (Clay CSV split sometimes wraps)
+ *   - null / undefined → empty string (silent, normal missing-field case)
+ *   - any other shape → empty string + one-line warn log (unusual, worth visibility)
+ *
+ * Returns an empty string when no usable value was present. Callers should
+ * treat empty string as "missing" and rely on the shared ingestion validator
+ * (which rejects rows with neither email nor phone) for the final decision.
+ */
+function coerceSidecarString(value: unknown, fieldLabel: string): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value).trim();
+  if (typeof value === 'boolean') return String(value).trim();
+  if (Array.isArray(value) && value.length === 1 && typeof value[0] === 'string') {
+    return value[0].trim();
+  }
+  if (value === null || value === undefined) return '';
+  console.warn(
+    `[ClayMapper] Non-string ${fieldLabel} sidecar dropped — type=${typeof value}, ` +
+    `isArray=${Array.isArray(value)}, length=${Array.isArray(value) ? value.length : 'n/a'}`,
+  );
+  return '';
+}
+
+/**
  * Map a single Clay webhook row to the camelCase candidate record shape
  * consumed by `mapToCandidateRow`. The returned object is NOT yet a DB row —
  * it's a canonical intermediate that the ingestion barrel turns into a row
@@ -239,13 +268,10 @@ export function mapClayRowToCandidate(
   rawRow: Record<string, unknown>,
   config: ClayMapperConfig,
 ): ClayMappedCandidate {
-  // Sidecar fields use Clay column display names (e.g. "Personal Email")
-  const sidecarEmail = typeof rawRow[config.emailField] === 'string'
-    ? (rawRow[config.emailField] as string).trim().toLowerCase()
-    : '';
-  const sidecarPhone = typeof rawRow[config.phoneField] === 'string'
-    ? (rawRow[config.phoneField] as string).trim()
-    : '';
+  // Sidecar fields use Clay column display names (e.g. "Personal Email").
+  // P6: coerce non-string shapes (array, number, boolean) rather than dropping silently.
+  const sidecarEmail = coerceSidecarString(rawRow[config.emailField], 'email').toLowerCase();
+  const sidecarPhone = coerceSidecarString(rawRow[config.phoneField], 'phone');
 
   const linkedIn = extractLinkedInBlob(rawRow, config);
 
@@ -303,8 +329,21 @@ export function computeClayFingerprint(
   const profileId = linkedIn.profile_id;
   const lastRefresh = linkedIn.last_refresh;
 
-  if (profileId !== null && profileId !== undefined && lastRefresh) {
-    return `clay:${String(profileId)}:${String(lastRefresh)}`;
+  // P3 (Story 2.8 review): strict type guard on profile_id. Previously any
+  // non-null/non-undefined value passed, which meant 0, {}, [], false, and
+  // other falsy/coerced values collapsed unrelated candidates into the same
+  // fingerprint bucket (e.g., profile_id: {} → "clay:[object Object]:...").
+  // Only accept non-empty strings and finite positive numbers as valid
+  // identity. last_refresh must also be a non-empty string.
+  const isValidProfileId =
+    (typeof profileId === 'string' && profileId.trim().length > 0) ||
+    (typeof profileId === 'number' && Number.isFinite(profileId) && profileId > 0);
+  const isValidRefresh =
+    (typeof lastRefresh === 'string' && lastRefresh.trim().length > 0) ||
+    (typeof lastRefresh === 'number' && Number.isFinite(lastRefresh));
+
+  if (isValidProfileId && isValidRefresh) {
+    return `clay:${String(profileId).trim()}:${String(lastRefresh).trim()}`;
   }
 
   const email = typeof rawRow[config.emailField] === 'string'

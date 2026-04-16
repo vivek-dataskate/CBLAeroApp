@@ -429,3 +429,130 @@ describe('computeClayFingerprint', () => {
     expect(fp).toBe(null);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Code review regression tests (2026-04-16) — covers patches P3, P4, P6
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('P3 — computeClayFingerprint type guard on profile_id', () => {
+  const base = {
+    'Personal Email': 'x@y.com',
+    'Enrich person': { first_name: 'X', last_refresh: '2026-04-15' },
+  };
+
+  it('rejects profile_id = 0 (falsy number)', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: 0 } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    // Falls through to email fallback, does NOT produce `clay:0:...`
+    expect(fp).toBe('clay:x@y.com');
+  });
+
+  it('rejects profile_id as empty object', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: {} } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    expect(fp).toBe('clay:x@y.com');
+  });
+
+  it('rejects profile_id as empty array', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: [] } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    expect(fp).toBe('clay:x@y.com');
+  });
+
+  it('rejects profile_id as boolean false', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: false } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    expect(fp).toBe('clay:x@y.com');
+  });
+
+  it('accepts profile_id as positive integer', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: 12345 } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    expect(fp).toBe('clay:12345:2026-04-15');
+  });
+
+  it('accepts profile_id as non-empty string', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: 'abc-123' } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    expect(fp).toBe('clay:abc-123:2026-04-15');
+  });
+
+  it('rejects profile_id as empty string (trim to empty)', () => {
+    const row = { ...base, 'Enrich person': { ...base['Enrich person'], profile_id: '   ' } };
+    const fp = computeClayFingerprint(row, CONFIG);
+    expect(fp).toBe('clay:x@y.com');
+  });
+});
+
+describe('P4 — parseClayLocation 4-part and edge shapes', () => {
+  it('returns nulls for 4-part locations (unknown shape, preserve raw)', () => {
+    expect(parseClayLocation('Region, City, State, Country')).toEqual({ city: null, state: null });
+  });
+
+  it('parses 3-part locations as city, state, drop country (real Clay shape)', () => {
+    expect(parseClayLocation('Temple Hills Park, Maryland, United States')).toEqual({
+      city: 'Temple Hills Park',
+      state: 'Maryland',
+    });
+  });
+});
+
+describe('P6 — non-string sidecar coercion', () => {
+  const baseLinkedin = {
+    first_name: 'Test',
+    last_name: 'User',
+    url: 'https://linkedin.com/in/test',
+    profile_id: 1,
+    last_refresh: '2026-04-15',
+  };
+
+  it('coerces number email to string', () => {
+    const row = {
+      'Personal Email': 'x@y.com',
+      'Mobile Phone': 14155551234,  // number instead of string
+      'Enrich person': baseLinkedin,
+    };
+    const mapped = mapClayRowToCandidate(row, CONFIG);
+    expect(mapped.phone).toBe('14155551234');
+  });
+
+  it('unwraps single-element array sidecar', () => {
+    const row = {
+      'Personal Email': ['wrapped@example.com'],
+      'Mobile Phone': '+15551234567',
+      'Enrich person': baseLinkedin,
+    };
+    const mapped = mapClayRowToCandidate(row, CONFIG);
+    expect(mapped.email).toBe('wrapped@example.com');
+  });
+
+  it('drops object sidecar with empty string (logged warning)', () => {
+    const row = {
+      'Personal Email': { nested: 'bad' },
+      'Mobile Phone': '+15551234567',
+      'Enrich person': baseLinkedin,
+    };
+    const mapped = mapClayRowToCandidate(row, CONFIG);
+    expect(mapped.email).toBe(null);  // empty string → null after coalesce
+  });
+
+  it('coerces boolean sidecar to string representation', () => {
+    const row = {
+      'Personal Email': 'x@y.com',
+      'Mobile Phone': true,
+      'Enrich person': baseLinkedin,
+    };
+    const mapped = mapClayRowToCandidate(row, CONFIG);
+    expect(mapped.phone).toBe('true');
+  });
+
+  it('handles null sidecar as empty (no warning)', () => {
+    const row = {
+      'Personal Email': 'x@y.com',
+      'Mobile Phone': null,
+      'Enrich person': baseLinkedin,
+    };
+    const mapped = mapClayRowToCandidate(row, CONFIG);
+    expect(mapped.phone).toBe(null);
+  });
+});

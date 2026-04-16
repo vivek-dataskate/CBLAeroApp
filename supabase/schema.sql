@@ -1694,7 +1694,8 @@ create or replace function cblaero_app.upsert_clay_hourly_sync_run(
 ) returns uuid language plpgsql as $$
 declare
   v_id uuid;
-  v_bucket timestamptz := date_trunc('hour', now() at time zone 'utc') at time zone 'utc';
+  -- P13 (Story 2.8 code review): simplified — date_trunc returns timestamptz when given one
+  v_bucket timestamptz := date_trunc('hour', now());
 begin
   insert into cblaero_app.sync_runs (
     source, status, started_at, completed_at,
