@@ -146,11 +146,18 @@ Findings from live dashboard review (screenshots reviewed with Vivek):
 - [x] Task 21: All 4 modules `defaultOpen={true}` — no hidden sections; admins need at-a-glance visibility
 - [x] Task 22: Updated `docs/dashboard-ui-standards.md` with Admin Console Layout section (2x2 grid rules, module rules, editable scheduler cadence spec)
 
+- [x] Task 23: Add inline schedule editor to compact `SchedulerStatusCard` — click schedule text to open "Every [N] [min/hrs]" picker, Save calls PATCH `/api/internal/admin/scheduler/definitions/:id` with new `cron_expression`, auto-creates policy version for audit trail
+- [x] Task 24: Widen admin page to full viewport (`w-full px-6`) — no more `max-w-6xl` constraint; data-dense modules need horizontal space
+- [x] Task 25: Compact sync-run table — reduced padding (`px-2 py-1.5`), shorter headers (Dur/Fail/Tot), removed redundant Status column
+- [x] Task 26: Fix "View All" pagination — pagination now shows after expanding from compact 5-run view
+- [x] Task 27: Responsive governance forms — `xl:` breakpoint for 3-col/2-col grids so forms stack in half-width card
+
 **Files changed**:
-- `src/app/dashboard/admin/page.tsx` — layout from stacked to 2x2 grid, all modules defaultOpen
-- `src/app/dashboard/admin/SchedulerStatusCard.tsx` — added compact list view
-- `src/app/dashboard/admin/SyncRunSummaryCard.tsx` — added compact mode with 5-run limit and "View All"
-- `docs/dashboard-ui-standards.md` — Admin Console Layout section
+- `src/app/dashboard/admin/page.tsx` — layout from stacked to 2x2 grid, all modules defaultOpen, full-width
+- `src/app/dashboard/admin/SchedulerStatusCard.tsx` — compact list view with inline schedule editor (interval picker + PATCH API)
+- `src/app/dashboard/admin/SyncRunSummaryCard.tsx` — compact mode with 5-run limit, "View All" with working pagination, tighter table
+- `src/app/dashboard/admin/AdminGovernanceConsole.tsx` — responsive breakpoints
+- `docs/dashboard-ui-standards.md` — Admin Console Layout section, width exception, editable scheduler cadence spec
 
 ## Change Log
 
@@ -159,3 +166,5 @@ Findings from live dashboard review (screenshots reviewed with Vivek):
 | 2026-04-08 | Story created and implemented | Dev Agent |
 | 2026-04-08 | Header consistency fix: Sign Out on all pages, removed inconsistent Dashboard/Saved Searches buttons from headers | Dev Agent |
 | 2026-04-16 | Admin Console 2x2 layout: compact scheduler, recent-5 sync runs, all modules open by default | Claude Opus 4.6 |
+| 2026-04-16 | Editable scheduler cadences: inline interval picker in compact view, calls PATCH API, creates policy version | Claude Opus 4.6 |
+| 2026-04-16 | Layout fixes: full-width admin page, compact sync-run table, working View All pagination, responsive governance forms | Claude Opus 4.6 |
