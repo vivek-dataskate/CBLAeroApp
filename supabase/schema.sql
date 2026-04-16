@@ -605,7 +605,7 @@ begin
           extra_attributes = excluded.extra_attributes,
           availability_status = excluded.availability_status,
           ingestion_state = case
-            when candidates.ingestion_state in ('active', 'pending_review') then candidates.ingestion_state
+            when candidates.ingestion_state in ('active', 'pending_review', 'rejected', 'merged', 'pending_enrichment') then candidates.ingestion_state
             else excluded.ingestion_state
           end,
           source = excluded.source,
@@ -658,7 +658,7 @@ begin
           extra_attributes = excluded.extra_attributes,
           availability_status = excluded.availability_status,
           ingestion_state = case
-            when candidates.ingestion_state in ('active', 'pending_review') then candidates.ingestion_state
+            when candidates.ingestion_state in ('active', 'pending_review', 'rejected', 'merged', 'pending_enrichment') then candidates.ingestion_state
             else excluded.ingestion_state
           end,
           source = excluded.source,
@@ -933,7 +933,7 @@ begin
       certifications = case when excluded.certifications != '[]'::jsonb then excluded.certifications else cblaero_app.candidates.certifications end,
       availability_status = excluded.availability_status,
       ingestion_state = case
-        when cblaero_app.candidates.ingestion_state in ('active', 'pending_review') then cblaero_app.candidates.ingestion_state
+        when cblaero_app.candidates.ingestion_state in ('active', 'pending_review', 'rejected', 'merged', 'pending_enrichment') then cblaero_app.candidates.ingestion_state
         else excluded.ingestion_state
       end,
       source = excluded.source, source_batch_id = excluded.source_batch_id,
@@ -1094,7 +1094,7 @@ begin
         certifications = case when excluded.certifications != '[]'::jsonb then excluded.certifications else cblaero_app.candidates.certifications end,
         availability_status = excluded.availability_status,
         ingestion_state = case
-          when cblaero_app.candidates.ingestion_state in ('active', 'pending_review') then cblaero_app.candidates.ingestion_state
+          when cblaero_app.candidates.ingestion_state in ('active', 'pending_review', 'rejected', 'merged', 'pending_enrichment') then cblaero_app.candidates.ingestion_state
           else excluded.ingestion_state
         end,
         source = excluded.source, source_batch_id = excluded.source_batch_id,

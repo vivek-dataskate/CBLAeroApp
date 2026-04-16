@@ -32,9 +32,22 @@ const MODEL_PRICING: Record<string, { inputPerM: number; outputPerM: number }> =
 };
 const DEFAULT_PRICING = { inputPerM: 3.00, outputPerM: 15.00 };
 
-function estimateCost(model: string, inputTokens: number, outputTokens: number): number {
+// D2 (Epic 2 retro): per-page surcharge for vision/document content blocks.
+// Anthropic bills PDF/image documents at ~$0.015/page, but reports tokens at
+// a lower count than the actual billed amount. This constant is applied as an
+// additive surcharge per document page on top of the token-based estimate.
+const VISION_PAGE_SURCHARGE_USD = 0.011; // conservative — Anthropic charges ~$0.015, we leave margin
+
+function estimateCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  documentPageCount: number = 0,
+): number {
   const pricing = MODEL_PRICING[model] ?? DEFAULT_PRICING;
-  return (inputTokens * pricing.inputPerM + outputTokens * pricing.outputPerM) / 1_000_000;
+  const tokenCost = (inputTokens * pricing.inputPerM + outputTokens * pricing.outputPerM) / 1_000_000;
+  const visionSurcharge = documentPageCount * VISION_PAGE_SURCHARGE_USD;
+  return tokenCost + visionSurcharge;
 }
 
 /**
@@ -94,7 +107,17 @@ export async function callLlm(
   const outputChars = text.length;
   const inputTokens = message.usage.input_tokens;
   const outputTokens = message.usage.output_tokens;
-  const estimatedCostUsd = estimateCost(model, inputTokens, outputTokens);
+  // D2: count document/image pages in the user content for vision cost surcharge.
+  // Document content blocks have `type: 'document'` with a `source` containing the
+  // PDF; image blocks have `type: 'image'`. Each counts as 1 page for cost purposes.
+  // Text blocks have `type: 'text'` and don't incur the surcharge.
+  const documentPageCount = Array.isArray(userContent)
+    ? userContent.filter((block) => {
+        const t = (block as unknown as Record<string, unknown>).type;
+        return t === 'document' || t === 'image';
+      }).length
+    : 0;
+  const estimatedCostUsd = estimateCost(model, inputTokens, outputTokens, documentPageCount);
 
   // Structured metric log — every LLM call gets one
   console.log(

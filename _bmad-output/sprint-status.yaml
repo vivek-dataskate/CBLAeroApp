@@ -5,7 +5,7 @@
 # story_location: docs/implementation_artifacts/stories
 
 generated: 2026-03-11
-last_updated: 2026-04-16
+last_updated: 2026-04-16  # Epic 2 closed + retro done
 project: CBLAero
 project_key: NOKEY
 tracking_system: file-system
@@ -69,7 +69,7 @@ development_status:
   1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
   epic-1-retrospective: done
 
-  epic-2: in-progress  # reopened 2026-04-15 to add story 2-8 (Clay Webhook Ingestion)
+  epic-2: done  # 2026-04-16: all 13 stories done, retro complete, 430 tests at close
   2-1-build-admin-supervised-initial-1m-record-migration-pipeline: done
   2-2-implement-recruiter-csv-upload-wizard-and-validation: done  # 2026-03-31: production ingestion (6,150 candidates), extra_attributes deployed, CLI script PR #29
   2-3-implement-ats-and-email-ingestion-connectors: done
@@ -83,7 +83,7 @@ development_status:
   2-7-implement-global-scheduler-control-plane: done  # 2026-04-14: 2x adversarial code review (Sonnet), 22 findings fixed (7 DN + 15 patch), 6 deferred. outbox consumer, FOR UPDATE SKIP LOCKED, policy versioning, readiness probe implemented.
   2-7a-scheduler-admin-dashboard: done  # 2026-04-15: implemented — admin UI for scheduler management (view, trigger, pause, change cron, set next_run_at). 3 API routes + SchedulerStatusCard + auth actions. PR #72 merged.
   2-8-implement-clay-webhook-ingestion: done  # 2026-04-16: merged via PRs #80 (c7085b3 feat) + #81 (02b45a1 hourly-bucket fix). Push pattern (Clay HTTP API column → /api/webhooks/clay), real payload shape (enrichlinkedin_data nested blob + lowercase email/phone sidecars), default assignee vivek@cblsolutions.com, 55 tests passing. Retroactive story file written 2026-04-16.
-  epic-2-retrospective: optional
+  epic-2-retrospective: done  # 2026-04-16: full retro with 3 action items, 3 debt items, 1 team agreement. Saved to epic-2-retro-2026-04-16.md
 
   epic-3: backlog
   3-1-build-sms-outreach-template-and-scheduling-workflow: backlog
