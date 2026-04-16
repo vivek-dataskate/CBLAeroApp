@@ -109,6 +109,13 @@ so that candidate records are continuously synchronized from external sources.
 - [x] [AI-Review][HIGH] `SavedSearchDigestJob` never checked Graph `sendMail` response status. **Fixed: check `response.ok`, throw on failure.**
 - [x] [AI-Review][HIGH] `listRecentSyncErrors()` not wrapped in try/catch in admin page.tsx — DB failure crashed entire page. **Fixed: wrapped in try/catch.**
 - [x] [AI-Review][MEDIUM] Date-only `since` filter in Ceipal causes boundary overlap — added truncation warning log when maxPages hit.
+
+### Post-Ship Fixes (2026-04-16)
+
+- **maxPages reduced from 50 to 5** (250 records per run) — CEIPAL was taking 12+ minutes to fetch 2,500 records, blocking all other scheduler jobs.
+- **Fingerprint gate fixed**: `loadRecentFingerprints` caps at 100K but CEIPAL had 731K fingerprints. Replaced with `checkExistingFingerprints()` — a targeted IN-query that checks only the batch's hashes against the DB. No memory cap issue.
+- **CEIPAL `modified_after` filter**: The API appears to ignore the date-only `modified_after` parameter, returning the same ~2,500 records regardless. The fingerprint gate is now the primary dedup mechanism.
+- **Parallel outbox execution**: Different job types (CEIPAL, dedup, email) now run concurrently in `processOutbox()` so a slow CEIPAL doesn't block other jobs.
 - [x] [AI-Review][MEDIUM] `"NA"` normalization too broad — erased valid names. **Fixed: scoped `cleanNA()` to status/flag fields only; `clean()` for names.**
 - [x] [AI-Review][MEDIUM] No `[Ceipal]` prefixed logs in token acquisition. **Fixed: added success/failure logging with `[Ceipal]` prefix.**
 - [x] [AI-Review][MEDIUM] Bare `catch {}` in JSON parse of auth response. **Fixed: log parse error at `console.warn`.**

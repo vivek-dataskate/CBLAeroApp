@@ -9,6 +9,7 @@ import { fetchWithRetry } from './fetch-with-retry';
 import {
   computeFileHash,
   isAlreadyProcessed,
+  checkExistingFingerprints,
   loadRecentFingerprints,
   recordFingerprint,
   recordFingerprintBatch,
@@ -16,10 +17,6 @@ import {
 import {
   getLastCandidateUpdateBySource,
 } from '../../features/candidate-management/infrastructure/candidate-repository';
-import {
-  getMarkerValue,
-  setMarkerValue,
-} from '../../features/candidate-management/infrastructure/sync-error-repository';
 import {
   uploadFileToStorage,
 } from '../../features/candidate-management/infrastructure/storage';
@@ -95,11 +92,7 @@ export class CeipalIngestionJob implements SchedulerJob {
       const startPage = params?.startPage ?? 1;
       const maxPages = params?.maxPages ?? 5;
 
-      // Explicit since param takes priority; fall back to DB-backed last update timestamp.
-      // This ensures daily-sync works even without an explicit since param, and avoids
-      // the stale instance-level lastRunAt problem on serverless cold starts.
       let since = params?.since;
-      // Only skip incremental filter when an explicit non-default startPage is provided (resume scenario)
       if (!since && !(params?.startPage && params.startPage > 1)) {
         try {
           since = await getLastCandidateUpdateBySource('ceipal');
@@ -107,9 +100,6 @@ export class CeipalIngestionJob implements SchedulerJob {
           console.warn('[CeipalIngestionJob] Could not load last sync timestamp, performing full fetch:', err instanceof Error ? err.message : err);
         }
       }
-
-      // Load high-water applicant_id to skip already-seen records
-      const highWaterMark = await getHighWaterCeipalId();
 
       const applicants = await fetchCeipalApplicants({
         startPage,
@@ -126,78 +116,33 @@ export class CeipalIngestionJob implements SchedulerJob {
 
       const candidates = applicants.map(mapCeipalApplicantToCandidate);
 
-      // Fingerprint gate: filter out already-processed applicants
-      const knownFingerprints = await loadRecentFingerprints(DEFAULT_TENANT_ID, 'ats_external_id');
-      let consecutiveFingerprintPages = 0;
-      const pageSize = 50; // matches CEIPAL_PAGE_SIZE
-      const newCandidates: Record<string, unknown>[] = [];
-      let maxSeenId = highWaterMark;
+      // Targeted fingerprint check: query DB for only the hashes we fetched (not all 731K+)
+      const candidateHashes = candidates
+        .map((c) => {
+          const id = (c as Record<string, unknown>).ceipalId as string | undefined;
+          return id ? `ceipal:${id}` : null;
+        })
+        .filter((h): h is string => h !== null);
 
-      for (let i = 0; i < candidates.length; i++) {
-        const c = candidates[i];
+      const existingFingerprints = await checkExistingFingerprints(DEFAULT_TENANT_ID, 'ats_external_id', candidateHashes);
+
+      const newCandidates = candidates.filter((c) => {
         const ceipalId = (c as Record<string, unknown>).ceipalId as string | undefined;
-
-        // Skip records at or below the high-water mark
-        if (ceipalId && highWaterMark) {
-          const numId = Number(ceipalId);
-          const numHigh = Number(highWaterMark);
-          if (!isNaN(numId) && !isNaN(numHigh) && numId <= numHigh) {
-            continue;
-          }
-        }
-
-        // Track highest ID seen
-        if (ceipalId) {
-          const numId = Number(ceipalId);
-          const numMax = Number(maxSeenId);
-          if (!isNaN(numId) && (isNaN(numMax) || numId > numMax)) {
-            maxSeenId = ceipalId;
-          }
-        }
-
-        if (!ceipalId) {
-          newCandidates.push(c);
-          continue;
-        }
-
-        const extId = `ceipal:${ceipalId}`;
-        if (knownFingerprints.has(extId)) {
-          continue;
-        }
-        newCandidates.push(c);
-
-        // Check if entire page was fingerprint hits — early exit
-        if ((i + 1) % pageSize === 0) {
-          const pageStart = i + 1 - pageSize;
-          const pageNew = newCandidates.length - newCandidates.filter((_, idx) => idx < newCandidates.length - pageSize).length;
-          if (pageNew === 0) {
-            consecutiveFingerprintPages++;
-            if (consecutiveFingerprintPages >= 2) {
-              console.log(`[CeipalIngestionJob] 2 consecutive pages with no new records — stopping early`);
-              break;
-            }
-          } else {
-            consecutiveFingerprintPages = 0;
-          }
-        }
-      }
+        if (!ceipalId) return true;
+        return !existingFingerprints.has(`ceipal:${ceipalId}`);
+      });
 
       const skipped = candidates.length - newCandidates.length;
+      console.log(`[CeipalIngestionJob] ${newCandidates.length} new, ${skipped} already fingerprinted of ${candidates.length} total`);
 
       if (newCandidates.length === 0) {
-        console.log(`[CeipalIngestionJob] All ${candidates.length} applicants already seen — skipping (${skipped} fingerprint/high-water hits)`);
-        // Still save high-water mark
-        if (maxSeenId && maxSeenId !== highWaterMark) {
-          await saveHighWaterCeipalId(maxSeenId);
-        }
         await completeSyncRun(runId, { succeeded: 0, failed: 0, total: candidates.length });
         return;
       }
 
-      console.log(`[CeipalIngestionJob] ${newCandidates.length} new of ${candidates.length} total (${skipped} skipped via fingerprint/high-water)`);
       const { inserted, failed } = await batchUpsertCandidatesFromATS(newCandidates);
 
-      // Record fingerprints in batch — only for candidates with stable ceipalId
+      // Record fingerprints for newly processed candidates
       const fingerprintEntries = newCandidates
         .filter((c) => (c as Record<string, unknown>).ceipalId)
         .map((c) => ({
@@ -216,36 +161,12 @@ export class CeipalIngestionJob implements SchedulerJob {
         }
       }
 
-      // Save high-water mark for next run
-      if (maxSeenId && maxSeenId !== highWaterMark) {
-        await saveHighWaterCeipalId(maxSeenId);
-      }
-
       console.log(`[CeipalIngestionJob] ${inserted} upserted, ${failed} failed`);
       await completeSyncRun(runId, { succeeded: inserted, failed, total: newCandidates.length });
     } catch (err) {
       recordSyncFailure('ceipal', 'polling', err, runId);
       await failSyncRun(runId, err instanceof Error ? (err.stack ?? err.message) : String(err));
     }
-  }
-}
-
-const CEIPAL_HIGH_WATER_KEY = 'ceipal_high_water_applicant_id';
-
-async function getHighWaterCeipalId(): Promise<string | null> {
-  try {
-    return await getMarkerValue(CEIPAL_HIGH_WATER_KEY, 'high_water_id') ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function saveHighWaterCeipalId(id: string): Promise<void> {
-  try {
-    await setMarkerValue(CEIPAL_HIGH_WATER_KEY, 'high_water_id', id);
-    console.log(`[CeipalIngestionJob] High-water mark saved: ${id}`);
-  } catch (err) {
-    console.error('[CeipalIngestionJob] Failed to save high-water mark:', err instanceof Error ? err.message : err);
   }
 }
 

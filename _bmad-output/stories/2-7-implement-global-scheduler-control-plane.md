@@ -73,6 +73,10 @@ so that ATS syncs, inbox scans, refresh sweeps, and future digests do not rely o
 
 **Fix:** `updateScheduleDefinitionNextRun()` now sets `last_claimed_at = null` alongside `next_run_at`, releasing the claim guard so the next tick can claim the job immediately. Error logging was also added to the update call (was previously swallowing failures silently).
 
+### Parallel outbox execution (2026-04-16)
+
+`processOutbox()` was processing all outbox events sequentially — a slow CEIPAL sync (12+ min) blocked dedup, email, and onedrive from running. Changed to group events by `job_key` and run groups in parallel via `Promise.allSettled`. Same-type events (e.g. two manual ceipal triggers) still run sequentially within their group for safety.
+
 ### References
 
 - [Source: docs/planning_artifacts/epics.md#story-2.7-implement-global-scheduler-control-plane](../planning_artifacts/epics.md)

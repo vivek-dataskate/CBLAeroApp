@@ -301,3 +301,46 @@ export async function loadRecentFingerprints(
 
   return new Set(rows.map((row) => row.fingerprint_hash));
 }
+
+/**
+ * Check which of a specific set of fingerprint hashes already exist in the DB.
+ * Uses a targeted IN-query instead of loading all fingerprints into memory.
+ * Ideal for large fingerprint tables (731K+) where loadRecentFingerprints hits its 100K cap.
+ */
+export async function checkExistingFingerprints(
+  tenantId: string,
+  type: FingerprintType,
+  hashes: string[],
+): Promise<Set<string>> {
+  if (hashes.length === 0) return new Set();
+
+  if (shouldUseInMemoryPersistenceForTests()) {
+    const result = new Set<string>();
+    for (const row of fingerprintStore.values()) {
+      if (
+        row.tenant_id === tenantId &&
+        row.fingerprint_type === type &&
+        row.status === "processed" &&
+        hashes.includes(row.fingerprint_hash)
+      ) {
+        result.add(row.fingerprint_hash);
+      }
+    }
+    return result;
+  }
+
+  const client = getSupabaseAdminClient();
+  const { data, error } = await client
+    .from("content_fingerprints")
+    .select("fingerprint_hash")
+    .eq("tenant_id", tenantId)
+    .eq("fingerprint_type", type)
+    .eq("status", "processed")
+    .in("fingerprint_hash", hashes);
+
+  if (error) {
+    throw new Error(`[Fingerprint] Batch check failed: ${error.message}`);
+  }
+
+  return new Set((data ?? []).map((row) => row.fingerprint_hash));
+}
