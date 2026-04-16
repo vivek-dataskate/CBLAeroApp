@@ -5,7 +5,7 @@
 # story_location: docs/implementation_artifacts/stories
 
 generated: 2026-03-11
-last_updated: 2026-04-16  # Epic 2 closed + retro done
+last_updated: 2026-04-16  # Story 1-12 provider framework complete
 project: CBLAero
 project_key: NOKEY
 tracking_system: file-system
@@ -54,7 +54,7 @@ epic_schedule:
     finish: week-4
 
 development_status:
-  epic-1: done
+  epic-1: in-progress  # reopened for Story 1.12 (provider framework)
   1-1-initialize-next-js-baseline-with-core-platform-modules: done
   1-2-implement-enterprise-sso-and-session-controls: done
   1-3-enforce-rbac-and-tenant-isolated-authorization: done
@@ -67,6 +67,10 @@ development_status:
   1-9a-ai-cost-dashboard-and-prompt-deployment-gates: done  # depends on 1.9
   1-10-implement-shared-api-auth-middleware: done  # depends on 1.8
   1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
+  1-12-edge-system-provider-framework: done  # 2026-04-16: framework complete + TWO 4-layer code reviews. Round-2 applied 19 more patches + 2 decisions (1C/2C). 110 tests passing (up from 73). Key additions: result_meta column, auth-failure exclusion from kill-switch, degraded auto-recovery, OAuth fetch timeout, HMAC rehash for constant-time compare, maxEventsPerBatch cap, 501 removed from retry whitelist. Story group 2 (tests + migration) review deferred to follow-up run.
+  1-12a-migrate-clay-ceipal: backlog  # depends on 1.12; lowest risk validation
+  1-12b-migrate-graph-anthropic: backlog  # depends on 1.12a; critical path validation
+  1-12c-migrate-supabase: backlog  # depends on 1.12b; health monitoring only, highest stakes
   epic-1-retrospective: done
 
   epic-2: done  # 2026-04-16: all 13 stories done, retro complete, 430 tests at close
@@ -85,9 +89,12 @@ development_status:
   2-8-implement-clay-webhook-ingestion: done  # 2026-04-16: merged via PRs #80 (c7085b3 feat) + #81 (02b45a1 hourly-bucket fix). Push pattern (Clay HTTP API column → /api/webhooks/clay), real payload shape (enrichlinkedin_data nested blob + lowercase email/phone sidecars), default assignee vivek@cblsolutions.com, 55 tests passing. Retroactive story file written 2026-04-16.
   epic-2-retrospective: done  # 2026-04-16: full retro with 3 action items, 3 debt items, 1 team agreement. Saved to epic-2-retro-2026-04-16.md
 
-  epic-3: backlog
-  3-1-build-sms-outreach-template-and-scheduling-workflow: backlog
+  epic-3: in-progress
+  3-1-build-sms-outreach-template-and-scheduling-workflow: review  # 2026-04-16: implementation complete, 46 tests, 25 new files. Stub SMS provider — real Telnyx deferred.
+  3-1a-recruiter-ai-command-bar: backlog  # depends on 3.1
+  3-1b-telnyx-sms-provider-integration: backlog  # depends on 3.1; prerequisite for 3.4, 3.5
   3-2-build-email-outreach-templates-with-role-permissions: backlog
+  3-2a-instantly-email-provider-integration: backlog  # depends on 3.2; shares webhook infra with 3.1b
   3-3-implement-consent-opt-out-and-channel-preference-engine: backlog
   3-4-capture-candidate-responses-and-seriousness-inputs: backlog
   3-5-track-delivery-outcomes-and-retry-failed-sends: backlog
