@@ -601,7 +601,16 @@ export class GlobalScheduler {
 
   private async updateScheduleDefinitionNextRun(definitionId: number, nextRunAt: string): Promise<void> {
     const db = getSupabaseAdminClient();
-    await db.from('schedule_definitions').update({ next_run_at: nextRunAt, updated_at: new Date().toISOString() }).eq('id', definitionId);
+    // Clear last_claimed_at so claim_due_schedules can re-claim this job
+    // when next_run_at becomes due (otherwise the stale-threshold guard blocks it)
+    const { error } = await db.from('schedule_definitions').update({
+      next_run_at: nextRunAt,
+      last_claimed_at: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', definitionId);
+    if (error) {
+      console.error(`[GlobalScheduler] Failed to advance next_run_at for definition ${definitionId}:`, error.message);
+    }
   }
 }
 
