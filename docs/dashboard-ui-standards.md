@@ -344,6 +344,81 @@ Same styling as inputs:
 
 ---
 
+## Admin Console Layout
+
+The Admin Console (`/dashboard/admin`) contains 4 modules arranged in a **2x2 grid on desktop** (stacks vertically on mobile). No single module should dominate the viewport.
+
+### Grid Layout
+
+```
+┌──────────────────────┬──────────────────────┐
+│  Scheduler Status    │  Sync Runs           │
+│  (compact job list)  │  (recent 5, summary) │
+├──────────────────────┼──────────────────────┤
+│  User & Team         │  AI Costs            │
+│  Governance          │  (always visible)    │
+└──────────────────────┴──────────────────────┘
+```
+
+```tsx
+<div className="mt-4 grid gap-4 lg:grid-cols-2">
+  {/* Top-left: Scheduler Status */}
+  {/* Top-right: Sync Runs */}
+  {/* Bottom-left: User & Team Governance */}
+  {/* Bottom-right: AI Costs */}
+</div>
+```
+
+### Module Rules
+
+1. **All 4 modules open by default.** Collapsible cards retain the toggle but `defaultOpen` is true for all modules. Admins need at-a-glance visibility — hidden sections get ignored.
+
+2. **Scheduler Status — compact job list, not a wide table.**
+   - Each job renders as a dense row: job name, status badge, schedule in human-readable form (e.g., "Every 4 hours"), and a "Run Now" button.
+   - Do NOT show columns for last-run, next-run, cron expression in the primary view. Those details belong in a tooltip, expandable detail row, or the edit modal.
+   - The schedule is **editable inline**: a small edit icon next to the schedule opens an edit modal (see "Editable Scheduler Cadences" below).
+
+3. **Sync Runs — recent 5, not paginated.**
+   - Show only the 5 most recent sync runs in a compact table (source, started, duration, ok, failed, total).
+   - A "View All" link at the bottom expands to the full paginated table or navigates to a dedicated page.
+   - Do NOT show a 200-row paginated table in the summary view.
+
+4. **AI Costs — always visible, never collapsed.**
+   - Even when empty, show a placeholder: "$0.00 this billing period" with a muted empty-state message.
+   - Admin cost visibility is a compliance requirement — it must not be hidden behind a collapsed card.
+
+5. **User & Team Governance — always open.**
+   - User management is a core admin task. Show the user list and invite form immediately.
+   - The "Assign Role" and "Update Teams" forms can be inline or in a modal triggered from the user row.
+
+### Editable Scheduler Cadences
+
+Admins can change job schedules directly from the dashboard without a code deploy.
+
+**UI Pattern:**
+- Each job row shows its schedule in human-readable form (e.g., "Every 4 hours").
+- A small pencil/edit icon (`h-4 w-4 text-gray-400 hover:text-cbl-blue`) next to the schedule text opens an edit modal.
+- The modal contains:
+  - A **human-friendly interval picker**: "Every [N] [minutes / hours]" dropdowns for simple cadences.
+  - The **raw cron expression** shown below in a read-only text field for power users (updates live as the picker changes).
+  - A **Save** button that persists the new schedule.
+  - A **Cancel** button.
+
+**Persistence:**
+- Schedule changes write to the `policy_registry` + `policy_versions` tables in the `cblaero_app` schema.
+- Each job is identified by its `policyFamily` + `policyKey` (already wired in `registerIngestionJobs()`).
+- Changes take effect on the next scheduler tick — no restart or redeploy required.
+- The `policy_versions` table tracks effective dates, giving a full audit trail of schedule changes.
+
+**Validation:**
+- Minimum interval: 5 minutes (prevent accidental sub-minute polling).
+- Maximum interval: 168 hours (1 week).
+- The Save action must confirm: "Change [Job Name] schedule from [old] to [new]?"
+
+**Implementation Note:** The `CandidateAvailabilityRefreshJob` already reads `interval_hours` from `policy_registry` at runtime (story 2-6). Generalize this pattern to all 7 jobs by reading the schedule from `policy_versions` at job registration time and on each scheduler tick.
+
+---
+
 ## Checklist for New Pages
 
 When creating a new dashboard page, verify:
