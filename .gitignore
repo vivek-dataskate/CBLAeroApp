@@ -64,8 +64,11 @@ _bmad-core/
 
 # BMAD project artifacts (PRD, stories, architecture, sprint tracking) — committed to git
 
-# Claude / Cowork session data and skills
-.claude/
+# Claude / Cowork — ignore ephemeral data, keep settings + skills + commands
+.claude/*
+!.claude/settings.json
+!.claude/commands/
+!.claude/skills/
 
 
 # Project management docs (contain business/product details)
