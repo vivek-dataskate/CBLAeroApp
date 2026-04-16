@@ -277,94 +277,118 @@ export class GlobalScheduler {
       return { outcomes: [] };
     }
 
-    const outcomes: ScheduleOutcome[] = [];
-
+    // Group events by job_key — same job type runs sequentially (safe for manual re-triggers),
+    // different job types run in parallel (CEIPAL doesn't block dedup/email)
+    const eventsByJobKey = new Map<string, typeof claimedEvents>();
     for (const event of claimedEvents ?? []) {
-      const payload = (event.payload ?? {}) as { cron_expression?: string; schedule_definition_id?: number };
-      const cronExpression = payload.cron_expression;
-      const scheduleDefinitionId = payload.schedule_definition_id;
-
-      const outcome: ScheduleOutcome = {
-        jobKey: event.job_key,
-        scheduleDefinitionId,
-        runId: event.schedule_run_id ?? undefined,
-        status: 'started',
-        message: 'Processing outbox event',
-        durationMs: 0,
-      };
-      outcomes.push(outcome);
-
-      const jobRegistration = this.registeredJobs.get(event.job_key);
-
-      if (!jobRegistration) {
-        const errorMsg = 'No registered job for outbox event';
-        await this.updateOutboxEventStatus(event.id, 'failed', errorMsg);
-        if (event.schedule_run_id) {
-          await this.updateScheduleRunStatus(event.schedule_run_id, 'failed', errorMsg, null, new Date().toISOString());
-        }
-        if (scheduleDefinitionId && cronExpression) {
-          await this.updateScheduleDefinitionNextRun(
-            scheduleDefinitionId,
-            safeCalculateNextRunAt(cronExpression, new Date(), event.job_key),
-          );
-        }
-        outcome.status = 'failed';
-        outcome.message = errorMsg;
-        continue;
-      }
-
-      const startedAtIso = new Date().toISOString();
-      if (event.schedule_run_id) {
-        await this.updateScheduleRunStatus(event.schedule_run_id, 'started', undefined, startedAtIso, undefined);
-      }
-
-      const startMs = Date.now();
-      const executionStartedAt = new Date();
-      try {
-        await jobRegistration.job.run();
-        const durationMs = Date.now() - startMs;
-        const effectiveCron = cronExpression ?? jobRegistration.metadata.cronExpression;
-        const nextRunAt = safeCalculateNextRunAt(effectiveCron, executionStartedAt, event.job_key);
-
-        await this.updateOutboxEventStatus(event.id, 'completed');
-        if (event.schedule_run_id) {
-          await this.updateScheduleRunStatus(event.schedule_run_id, 'completed', undefined, undefined, new Date().toISOString(), {
-            status: 'ok',
-            duration_ms: durationMs,
-          });
-        }
-        if (scheduleDefinitionId) {
-          await this.updateScheduleDefinitionNextRun(scheduleDefinitionId, nextRunAt);
-        }
-
-        outcome.status = 'completed';
-        outcome.message = 'Job completed';
-        outcome.durationMs = durationMs;
-      } catch (err) {
-        const durationMs = Date.now() - startMs;
-        const errorMessage = sanitizeErrorMessage(err); // NP6: strip stack traces
-        const effectiveCron = cronExpression ?? jobRegistration.metadata.cronExpression;
-        // P4: safeCalculateNextRunAt absorbs any secondary cron-parse throw inside this catch
-        const nextRunAt = safeCalculateNextRunAt(effectiveCron, executionStartedAt, event.job_key);
-
-        await this.updateOutboxEventStatus(event.id, 'failed', errorMessage);
-        if (event.schedule_run_id) {
-          await this.updateScheduleRunStatus(event.schedule_run_id, 'failed', errorMessage, undefined, new Date().toISOString(), {
-            status: 'failed',
-            duration_ms: durationMs,
-          });
-        }
-        if (scheduleDefinitionId) {
-          await this.updateScheduleDefinitionNextRun(scheduleDefinitionId, nextRunAt);
-        }
-
-        outcome.status = 'failed';
-        outcome.message = errorMessage;
-        outcome.durationMs = durationMs;
-      }
+      const group = eventsByJobKey.get(event.job_key) ?? [];
+      group.push(event);
+      eventsByJobKey.set(event.job_key, group);
     }
 
+    const groupPromises = [...eventsByJobKey.values()].map(async (events) => {
+      const results: ScheduleOutcome[] = [];
+      for (const event of events) {
+        results.push(await this.executeOutboxEvent(event));
+      }
+      return results;
+    });
+
+    const outcomes = (await Promise.allSettled(groupPromises)).flatMap((r) =>
+      r.status === 'fulfilled' ? r.value : [{
+        jobKey: 'unknown',
+        status: 'failed' as const,
+        message: r.reason instanceof Error ? r.reason.message : String(r.reason),
+        durationMs: 0,
+      }],
+    );
+
     return { outcomes };
+  }
+
+  private async executeOutboxEvent(event: { id: string; job_key: string; schedule_run_id: string | null; payload: unknown }): Promise<ScheduleOutcome> {
+    const payload = (event.payload ?? {}) as { cron_expression?: string; schedule_definition_id?: number };
+    const cronExpression = payload.cron_expression;
+    const scheduleDefinitionId = payload.schedule_definition_id;
+
+    const outcome: ScheduleOutcome = {
+      jobKey: event.job_key,
+      scheduleDefinitionId,
+      runId: event.schedule_run_id ?? undefined,
+      status: 'started',
+      message: 'Processing outbox event',
+      durationMs: 0,
+    };
+
+    const jobRegistration = this.registeredJobs.get(event.job_key);
+
+    if (!jobRegistration) {
+      const errorMsg = 'No registered job for outbox event';
+      await this.updateOutboxEventStatus(event.id, 'failed', errorMsg);
+      if (event.schedule_run_id) {
+        await this.updateScheduleRunStatus(event.schedule_run_id, 'failed', errorMsg, null, new Date().toISOString());
+      }
+      if (scheduleDefinitionId && cronExpression) {
+        await this.updateScheduleDefinitionNextRun(
+          scheduleDefinitionId,
+          safeCalculateNextRunAt(cronExpression, new Date(), event.job_key),
+        );
+      }
+      outcome.status = 'failed';
+      outcome.message = errorMsg;
+      return outcome;
+    }
+
+    const startedAtIso = new Date().toISOString();
+    if (event.schedule_run_id) {
+      await this.updateScheduleRunStatus(event.schedule_run_id, 'started', undefined, startedAtIso, undefined);
+    }
+
+    const startMs = Date.now();
+    const executionStartedAt = new Date();
+    try {
+      await jobRegistration.job.run();
+      const durationMs = Date.now() - startMs;
+      const effectiveCron = cronExpression ?? jobRegistration.metadata.cronExpression;
+      const nextRunAt = safeCalculateNextRunAt(effectiveCron, executionStartedAt, event.job_key);
+
+      await this.updateOutboxEventStatus(event.id, 'completed');
+      if (event.schedule_run_id) {
+        await this.updateScheduleRunStatus(event.schedule_run_id, 'completed', undefined, undefined, new Date().toISOString(), {
+          status: 'ok',
+          duration_ms: durationMs,
+        });
+      }
+      if (scheduleDefinitionId) {
+        await this.updateScheduleDefinitionNextRun(scheduleDefinitionId, nextRunAt);
+      }
+
+      outcome.status = 'completed';
+      outcome.message = 'Job completed';
+      outcome.durationMs = durationMs;
+    } catch (err) {
+      const durationMs = Date.now() - startMs;
+      const errorMessage = sanitizeErrorMessage(err);
+      const effectiveCron = cronExpression ?? jobRegistration.metadata.cronExpression;
+      const nextRunAt = safeCalculateNextRunAt(effectiveCron, executionStartedAt, event.job_key);
+
+      await this.updateOutboxEventStatus(event.id, 'failed', errorMessage);
+      if (event.schedule_run_id) {
+        await this.updateScheduleRunStatus(event.schedule_run_id, 'failed', errorMessage, undefined, new Date().toISOString(), {
+          status: 'failed',
+          duration_ms: durationMs,
+        });
+      }
+      if (scheduleDefinitionId) {
+        await this.updateScheduleDefinitionNextRun(scheduleDefinitionId, nextRunAt);
+      }
+
+      outcome.status = 'failed';
+      outcome.message = errorMessage;
+      outcome.durationMs = durationMs;
+    }
+
+    return outcome;
   }
 
   private async ensureScheduleDefinitions(): Promise<void> {
