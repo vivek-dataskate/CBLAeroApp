@@ -1,6 +1,6 @@
 # Story 2.7: Implement Global Scheduler Control Plane
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -66,6 +66,12 @@ so that ATS syncs, inbox scans, refresh sweeps, and future digests do not rely o
 - Use database claim semantics to enforce single-run ownership across instances and prevent schedule run duplication.
 - Cold-start handling is required for Render free tier; prefer in-process scheduling or a lightweight health probe before running any job.
 - The architecture must support future expansion of admin-managed cadence policies and multi-tenant schedule isolation.
+
+### Post-Ship Bug Fix (2026-04-16)
+
+**Bug:** `updateScheduleDefinitionNextRun()` advanced `next_run_at` after job completion but did NOT clear `last_claimed_at`. The `claim_due_schedules()` RPC has a stale-claim guard (`last_claimed_at IS NULL OR last_claimed_at < p_stale_threshold`) with a 15-minute threshold. When the scheduler tick interval (10 min) is shorter than the stale threshold (15 min), completed jobs couldn't be re-claimed on the next tick — they showed "overdue" in the admin UI until the stale window expired.
+
+**Fix:** `updateScheduleDefinitionNextRun()` now sets `last_claimed_at = null` alongside `next_run_at`, releasing the claim guard so the next tick can claim the job immediately. Error logging was also added to the update call (was previously swallowing failures silently).
 
 ### References
 

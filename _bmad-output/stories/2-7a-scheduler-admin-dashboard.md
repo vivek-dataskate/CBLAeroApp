@@ -201,7 +201,18 @@ Claude Sonnet 4.6
 - PATCH route includes a `JOB_POLICY_MAP` to resolve policyFamily/policyKey from job_key — required to create versioned policy entry on cron change (AC 3).
 - Trigger endpoint calls `GlobalScheduler` + `registerIngestionJobs()` in-process using session auth, not machine bearer token.
 - `SchedulerStatusCard` uses React fragment key workaround for sibling error/detail rows per definition.
-- The dashboard card shows: job name + key, editable cron (inline text input), status badge, last run time, editable next run (datetime-local input), Run now + Pause/Enable buttons.
+- The dashboard card shows: job name + key, human-readable schedule (read-only, `cronToHuman()`), status badge, last run time, editable next run (datetime-local input), Run now + Pause/Enable buttons. Inline cron editing removed 2026-04-16 — schedules are code-defined only.
+- Admin dashboard sections wrapped in `CollapsibleCard` component (2026-04-16) for cleaner multi-section layout.
+
+### Post-Ship Bug Fix — claim guard blocking re-claims (2026-04-16)
+
+**Symptom:** Jobs completed successfully but "Next Run" showed "overdue" indefinitely. The scheduler tick ran every 10 minutes but could not re-claim completed jobs.
+
+**Root cause:** `updateScheduleDefinitionNextRun()` in `scheduler.ts` advanced `next_run_at` but did NOT clear `last_claimed_at`. The `claim_due_schedules()` RPC guards against duplicate claims via `last_claimed_at IS NULL OR last_claimed_at < p_stale_threshold` (15-minute threshold). With a 10-minute tick interval, the claim was never stale enough to be re-claimed.
+
+**Fix:** Set `last_claimed_at = null` when updating `next_run_at` after job completion. Added error logging to the previously silent DB update. Also cleared stuck `last_claimed_at` values directly in production DB.
+
+**Why this wasn't seen with old per-job Render cron jobs:** The old pattern bypassed `claim_due_schedules()` entirely — each Render cron called the job directly via `/api/internal/jobs/run?job=<key>`. The claim guard only applies to the GlobalScheduler's `runDueJobs()` flow.
 
 ### File List
 
