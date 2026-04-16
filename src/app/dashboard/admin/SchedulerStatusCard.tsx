@@ -104,6 +104,33 @@ function StatusBadge({ status, enabled }: { status?: string; enabled: boolean })
 }
 
 type EditingNextRun = { id: number; value: string };
+type EditingCron = { id: number; amount: number; unit: 'minutes' | 'hours' };
+
+function parseCronToInterval(cron: string): { amount: number; unit: 'minutes' | 'hours' } | null {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const [minute, hour, dom, month, dow] = parts;
+  if (dom !== '*' || month !== '*' || dow !== '*') return null;
+  // */N * * * * → every N minutes
+  if (minute.startsWith('*/') && hour === '*') {
+    return { amount: Number(minute.slice(2)), unit: 'minutes' };
+  }
+  // 0 */N * * * → every N hours
+  if (minute === '0' && hour.startsWith('*/')) {
+    return { amount: Number(hour.slice(2)), unit: 'hours' };
+  }
+  // 0 * * * * → every 1 hour
+  if (minute === '0' && hour === '*') {
+    return { amount: 1, unit: 'hours' };
+  }
+  return null;
+}
+
+function intervalToCron(amount: number, unit: 'minutes' | 'hours'): string {
+  if (unit === 'minutes') return `*/${amount} * * * *`;
+  if (amount === 1) return '0 * * * *';
+  return `0 */${amount} * * *`;
+}
 
 export default function SchedulerStatusCard({ compact = false }: { compact?: boolean }) {
   const [definitions, setDefinitions] = useState<ScheduleDefinition[]>([]);
@@ -114,6 +141,8 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
   const [rowError, setRowError] = useState<Record<number, string>>({});
   const [editingNextRun, setEditingNextRun] = useState<EditingNextRun | null>(null);
   const [savingNextRun, setSavingNextRun] = useState<number | null>(null);
+  const [editingCron, setEditingCron] = useState<EditingCron | null>(null);
+  const [savingCron, setSavingCron] = useState<number | null>(null);
   // DN1: simple inline toast — no external library
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -230,6 +259,42 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
     }
   };
 
+  const handleSaveCron = async (def: ScheduleDefinition) => {
+    if (!editingCron || editingCron.id !== def.id) return;
+    const { amount, unit } = editingCron;
+    if (amount < 5 && unit === 'minutes') {
+      setRowError((prev) => ({ ...prev, [def.id]: 'Minimum interval is 5 minutes.' }));
+      return;
+    }
+    if ((unit === 'hours' && amount > 168) || (unit === 'minutes' && amount > 10080)) {
+      setRowError((prev) => ({ ...prev, [def.id]: 'Maximum interval is 168 hours (1 week).' }));
+      return;
+    }
+    const newCron = intervalToCron(amount, unit);
+    if (newCron === def.cron_expression) {
+      setEditingCron(null);
+      return;
+    }
+    setSavingCron(def.id);
+    clearRowError(def.id);
+    try {
+      const r = await fetch(`/api/internal/admin/scheduler/definitions/${def.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cron_expression: newCron }),
+      });
+      const json = await r.json();
+      if (!r.ok) throw new Error(json?.error?.message ?? `HTTP ${r.status}`);
+      setEditingCron(null);
+      setToast({ message: `Schedule updated: ${cronToHuman(newCron)}`, type: 'success' });
+      load();
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, [def.id]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setSavingCron(null);
+    }
+  };
+
   return (
     <div className="relative">
       {/* DN1: Auto-dismissing success/error toast */}
@@ -276,9 +341,46 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
                       <span className="truncate text-sm font-medium text-cbl-navy">{def.name}</span>
                       <StatusBadge status={def.last_run?.status} enabled={def.enabled} />
                     </div>
-                    <span className="text-xs text-gray-400" title={def.cron_expression}>
-                      {cronToHuman(def.cron_expression)} · <span className="text-gray-500">{relativeTimeFuture(def.next_run_at)}</span>
-                    </span>
+                    {editingCron?.id === def.id ? (
+                      <div className="mt-1 flex items-center gap-1.5">
+                        <span className="text-xs text-gray-500">Every</span>
+                        <input
+                          type="number"
+                          min={editingCron.unit === 'minutes' ? 5 : 1}
+                          max={editingCron.unit === 'minutes' ? 10080 : 168}
+                          value={editingCron.amount}
+                          onChange={(e) => setEditingCron({ ...editingCron, amount: Number(e.target.value) })}
+                          className="w-14 rounded border border-gray-300 px-1.5 py-0.5 text-xs focus:border-cbl-blue focus:outline-none"
+                        />
+                        <select
+                          value={editingCron.unit}
+                          onChange={(e) => setEditingCron({ ...editingCron, unit: e.target.value as 'minutes' | 'hours' })}
+                          className="rounded border border-gray-300 px-1 py-0.5 text-xs focus:border-cbl-blue focus:outline-none"
+                        >
+                          <option value="minutes">min</option>
+                          <option value="hours">hrs</option>
+                        </select>
+                        <button
+                          onClick={() => handleSaveCron(def)}
+                          disabled={savingCron === def.id}
+                          className="rounded bg-cbl-blue px-2 py-0.5 text-xs font-medium text-white hover:bg-cbl-blue/80 disabled:opacity-50"
+                        >
+                          {savingCron === def.id ? "…" : "Save"}
+                        </button>
+                        <button onClick={() => setEditingCron(null)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          const parsed = parseCronToInterval(def.cron_expression);
+                          setEditingCron(parsed ? { id: def.id, ...parsed } : { id: def.id, amount: 60, unit: 'minutes' });
+                        }}
+                        className="text-xs text-gray-400 hover:text-cbl-blue"
+                        title="Click to edit schedule"
+                      >
+                        {cronToHuman(def.cron_expression)} · {relativeTimeFuture(def.next_run_at)}
+                      </button>
+                    )}
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <button
