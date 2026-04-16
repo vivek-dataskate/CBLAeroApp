@@ -1135,7 +1135,7 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
   scheduler.register(new OneDriveResumePollerJob(), {
     jobKey: 'onedrive-sync',
     scheduleName: 'OneDrive Resume Sync',
-    cronExpression: '0 * * * *',
+    cronExpression: '0 */4 * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'onedrive_sync',
   });
