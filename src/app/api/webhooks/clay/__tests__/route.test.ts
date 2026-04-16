@@ -287,16 +287,20 @@ describe('POST /api/webhooks/clay — row-level error containment', () => {
   });
 
   it('records hourly bucket with errored count when all rows error', async () => {
-    // Row has a valid fingerprint but the shared pipeline rejects it (0 inserted)
+    // Row has a valid fingerprint but the shared pipeline rejects it (0 inserted).
+    // Under the P12 two-phase pattern: phase 1 seeds with zeros, phase 3 increments with real counts.
     ingestionMocks.batchUpsertCandidatesFromATS.mockResolvedValue({ inserted: 0, failed: 1 });
     vi.resetModules();
     const { POST } = await import('@/app/api/webhooks/clay/route');
     const res = await POST(makeRequest(SAMPLE_ROW) as never);
     expect(res.status).toBe(200);
-    // The hourly bucket RPC is called with errored=1, accepted=0
-    const bucketCall = rpcCalls.find((c) => c.name === 'upsert_clay_hourly_sync_run');
-    expect(bucketCall).toBeDefined();
-    expect(bucketCall?.args).toEqual({ p_accepted: 0, p_skipped: 0, p_errored: 1 });
+    // Two RPC calls expected: seed (zeros) + increment (real counts).
+    const bucketCalls = rpcCalls.filter((c) => c.name === 'upsert_clay_hourly_sync_run');
+    expect(bucketCalls).toHaveLength(2);
+    // Seed call — all zeros
+    expect(bucketCalls[0]?.args).toEqual({ p_accepted: 0, p_skipped: 0, p_errored: 0 });
+    // Increment call — real counts (1 errored)
+    expect(bucketCalls[1]?.args).toEqual({ p_accepted: 0, p_skipped: 0, p_errored: 1 });
   });
 
   it('skips rows with no fingerprint-eligible identity before calling the shared pipeline', async () => {
@@ -317,24 +321,26 @@ describe('POST /api/webhooks/clay — row-level error containment', () => {
   });
 });
 
-describe('POST /api/webhooks/clay — hourly bucket aggregation', () => {
-  it('calls upsert_clay_hourly_sync_run RPC exactly once per request', async () => {
+describe('POST /api/webhooks/clay — hourly bucket aggregation (two-phase)', () => {
+  it('calls upsert_clay_hourly_sync_run RPC exactly twice per request (seed + increment)', async () => {
     vi.resetModules();
     const { POST } = await import('@/app/api/webhooks/clay/route');
     await POST(makeRequest(SAMPLE_ROW) as never);
     const bucketCalls = rpcCalls.filter((c) => c.name === 'upsert_clay_hourly_sync_run');
-    expect(bucketCalls).toHaveLength(1);
+    // Two calls: seed (zeros, for bucket id) + increment (real counts)
+    expect(bucketCalls).toHaveLength(2);
   });
 
-  it('passes accurate accepted/skipped/errored counts to the bucket RPC', async () => {
+  it('seeds with zeros first, then increments with real counts', async () => {
     vi.resetModules();
     const { POST } = await import('@/app/api/webhooks/clay/route');
     await POST(makeRequest(SAMPLE_ROW) as never);
-    const bucketCall = rpcCalls.find((c) => c.name === 'upsert_clay_hourly_sync_run');
-    expect(bucketCall?.args).toEqual({ p_accepted: 1, p_skipped: 0, p_errored: 0 });
+    const bucketCalls = rpcCalls.filter((c) => c.name === 'upsert_clay_hourly_sync_run');
+    expect(bucketCalls[0]?.args).toEqual({ p_accepted: 0, p_skipped: 0, p_errored: 0 });
+    expect(bucketCalls[1]?.args).toEqual({ p_accepted: 1, p_skipped: 0, p_errored: 0 });
   });
 
-  it('aggregates a batch of 3 rows into a single bucket call', async () => {
+  it('aggregates a batch of 3 rows into a single increment call with total counts', async () => {
     const row1 = SAMPLE_ROW;
     const row2 = {
       ...SAMPLE_ROW,
@@ -350,8 +356,9 @@ describe('POST /api/webhooks/clay — hourly bucket aggregation', () => {
     const { POST } = await import('@/app/api/webhooks/clay/route');
     await POST(makeRequest([row1, row2, row3]) as never);
     const bucketCalls = rpcCalls.filter((c) => c.name === 'upsert_clay_hourly_sync_run');
-    expect(bucketCalls).toHaveLength(1);
-    expect(bucketCalls[0]?.args).toEqual({ p_accepted: 3, p_skipped: 0, p_errored: 0 });
+    // Still 2 calls per request regardless of batch size
+    expect(bucketCalls).toHaveLength(2);
+    expect(bucketCalls[1]?.args).toEqual({ p_accepted: 3, p_skipped: 0, p_errored: 0 });
   });
 
   it('reports bucket_run_id in the response body', async () => {
@@ -359,6 +366,157 @@ describe('POST /api/webhooks/clay — hourly bucket aggregation', () => {
     const { POST } = await import('@/app/api/webhooks/clay/route');
     const res = await POST(makeRequest(SAMPLE_ROW) as never);
     const body = await res.json();
+    // Bucket run id is captured from the first (seed) RPC call
     expect(body.bucket_run_id).toBe('bucket-run-fake-1');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Code review regression tests (2026-04-16) — covers patches P1, P2, P8, P10, P11
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('POST /api/webhooks/clay — P1 bearer normalization', () => {
+  it('accepts lowercase bearer scheme (case-insensitive)', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const req = makeRequest(SAMPLE_ROW, { authorization: 'bearer test-secret-abc123' });
+    const res = await POST(req as never);
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts Bearer with extra leading/trailing whitespace in header', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const req = makeRequest(SAMPLE_ROW, { authorization: '  Bearer test-secret-abc123  ' });
+    const res = await POST(req as never);
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects non-bearer scheme (e.g. Basic)', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const req = makeRequest(SAMPLE_ROW, { authorization: 'Basic test-secret-abc123' });
+    const res = await POST(req as never);
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects bearer token with different length (constant-time comparison guard)', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    // A shorter token — length mismatch short-circuits before timingSafeEqual
+    const req = makeRequest(SAMPLE_ROW, { authorization: 'Bearer short' });
+    const res = await POST(req as never);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /api/webhooks/clay — P2 byte-based size enforcement', () => {
+  it('enforces 256 KB ceiling against actual body size, not Content-Length header', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    // Build a payload > 256 KB by stuffing junk into a field
+    const bigPayload = {
+      ...SAMPLE_ROW,
+      padding: 'x'.repeat(300_000),
+    };
+    const bodyText = JSON.stringify(bigPayload);
+    const req = new Request('http://localhost:3000/api/webhooks/clay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        // Lie about content-length — claim it's small
+        'content-length': '10',
+        authorization: 'Bearer test-secret-abc123',
+      },
+      body: bodyText,
+    });
+    const res = await POST(req as never);
+    expect(res.status).toBe(413);
+    const body = await res.json();
+    expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+    // Error message includes actual byte count
+    expect(body.error.message).toContain('actual:');
+  });
+
+  it('rejects empty body with 400 BAD_JSON', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const req = new Request('http://localhost:3000/api/webhooks/clay', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': '0',
+        authorization: 'Bearer test-secret-abc123',
+      },
+      body: '',
+    });
+    const res = await POST(req as never);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe('BAD_JSON');
+  });
+});
+
+describe('POST /api/webhooks/clay — P8 in-batch fingerprint dedup', () => {
+  it('dedupes two rows in the same request sharing the same fingerprint', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    // Two rows with identical profile_id + last_refresh → identical fingerprint
+    const dupe = SAMPLE_ROW;
+    const res = await POST(makeRequest([dupe, dupe]) as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.received).toBe(2);
+    expect(body.accepted).toBe(1);
+    expect(body.skipped).toBe(1);
+    // Shared pipeline was called ONCE for the first row, not twice
+    expect(ingestionMocks.batchUpsertCandidatesFromATS).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/webhooks/clay — P10 rows wrapper collision', () => {
+  it('does not misread a row with a literal "rows" column as a batch envelope', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const rowWithRowsColumn = {
+      ...SAMPLE_ROW,
+      rows: [{ note: 'some metadata' }],  // Clay column literally named "rows"
+    };
+    const res = await POST(makeRequest(rowWithRowsColumn) as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The whole object is treated as a single row — NOT as an envelope
+    expect(body.received).toBe(1);
+    expect(body.accepted).toBe(1);
+    // The shared pipeline receives the row with the candidate fields intact
+    expect(ingestionMocks.batchUpsertCandidatesFromATS).toHaveBeenCalledTimes(1);
+  });
+
+  it('still treats a SOLE-key {rows: [...]} envelope as a batch wrapper', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const envelope = { rows: [SAMPLE_ROW] };
+    const res = await POST(makeRequest(envelope) as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.received).toBe(1);
+    expect(body.accepted).toBe(1);
+  });
+});
+
+describe('POST /api/webhooks/clay — P11 double-wrapped array flattening', () => {
+  it('flattens [[row1, row2]] to process both rows', async () => {
+    vi.resetModules();
+    const { POST } = await import('@/app/api/webhooks/clay/route');
+    const row2 = {
+      ...SAMPLE_ROW,
+      'Personal Email': 'row2@example.com',
+      'Enrich person': { ...SAMPLE_ROW['Enrich person'], profile_id: 2, last_refresh: '2026-04-15 19:00:00' },
+    };
+    const res = await POST(makeRequest([[SAMPLE_ROW, row2]]) as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.received).toBe(2);
+    expect(body.accepted).toBe(2);
   });
 });

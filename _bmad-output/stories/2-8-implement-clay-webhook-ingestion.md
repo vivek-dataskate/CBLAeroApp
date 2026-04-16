@@ -178,3 +178,38 @@ Edit the Clay table's HTTP API column:
 - **Lesson for future stories (per recurring-agent-mistakes feedback):** the pull→push pivot only surfaced because we captured a real Clay payload via webhook.site before writing the mapper. Any future third-party ingestion story should do the same — discover the real payload shape before the mapper, not during code review.
 - **External call economy:** no per-request calls to Clay — Clay pushes to us. The preserve-if-set RPC merge rule avoids a read-before-write round trip.
 - **Test quality bar:** mapper suite includes the real production payload as a frozen regression fixture. Auth negative paths, malformed JSON, oversized body, batch-with-one-bad-row, fingerprint replay, and hourly-bucket RPC assertions all covered.
+
+## Review Findings
+
+_Code review run 2026-04-16 via `bmad-code-review` — three adversarial layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor). 35 raw findings → 18 retained after dedup + triage. All 2 decision-needed resolved. All 13 patches being applied in this session._
+
+### Resolved during review (decision-needed)
+
+- **DN1 — Startup fail-loud vs first-request fail-loud** → resolved: relax spec wording. Tightening code to throw at module init would turn a single misconfig into a full-app outage; current "first-request fails loud" is safer. AC #26 wording in [epics.md](../epics.md) and AC #5 above should read *"fails loud on first request"* rather than *"fails loud at startup"*. Non-blocking.
+- **DN2 — Assignee "active user" filter** → resolved: dismissed. The `admin_managed_users` table ([schema.sql:123-132](../../supabase/schema.sql#L123-L132)) has no `status`/`active` column. Filter cannot be implemented and isn't needed until Epic 1 adds user deactivation semantics.
+
+### Action items (patch)
+
+- [ ] [Review][Patch] P1 — Timing-safe bearer comparison + case/whitespace header normalization [src/app/api/webhooks/clay/route.ts:250-251]
+- [ ] [Review][Patch] P2 — Content-Length bypass: read body via `arrayBuffer()` and enforce 256KB on actual byte count (current header check is trivially bypassed) [src/app/api/webhooks/clay/route.ts:265-278]
+- [ ] [Review][Patch] P3 — `computeClayFingerprint` type guard on `profile_id` (currently accepts 0, `{}`, `[]`, booleans as valid identity) [src/modules/ingestion/clay-mapper.ts:701]
+- [ ] [Review][Patch] P4 — `parseClayLocation` 3-part heuristic: `last.length > 0` is always true after empty-part filter, so the "give up" branch is dead code [src/modules/ingestion/clay-mapper.ts:506-511]
+- [ ] [Review][Patch] P5 — Flip `CLAY_WEBHOOK_DEBUG` default from `true` → `false` (PII leak risk + log-injection surface in production) [src/app/api/webhooks/clay/route.ts:61]
+- [ ] [Review][Patch] P6 — Coerce non-string sidecar email/phone (array, number, boolean) + log on drop [src/modules/ingestion/clay-mapper.ts:638-643]
+- [ ] [Review][Patch] P7 — Assignee cache TTL (1 hour) — currently stale user ID sticks until process restart [src/app/api/webhooks/clay/route.ts:80-119]
+- [ ] [Review][Patch] P8 — In-memory fingerprint dedup within a single webhook request (prevents duplicate-rows-in-batch double-processing before DB fingerprint record commits) [src/app/api/webhooks/clay/route.ts:158-232]
+- [ ] [Review][Patch] P9 — Test coverage gaps: 413/500 branches, empty-array fast-return, `normalizePayload` null return, 4-part location, `pickJobTitle`/`pickCurrentCompany` fallbacks, flat top-level LinkedIn blob, probe list fallbacks, non-string sidecar coercion [test files]
+- [ ] [Review][Patch] P10 — `rows` wrapper-key collision: a Clay column literally named `rows` would be misread as batch envelope. Require `{rows: [...]}` to be the sole top-level key [src/app/api/webhooks/clay/route.ts:142-143]
+- [ ] [Review][Patch] P11 — Double-wrapped array `[[row1, row2]]` silently drops everything with 200 response [src/app/api/webhooks/clay/route.ts:136-137]
+- [ ] [Review][Patch] P12 — `sync_run_errors` not linked to hourly bucket `run_id` — Clay errors don't appear under the 2.4b error detail drill-down. Fix by calling the hourly-bucket RPC at start of request to get the bucket ID, pass as `runId` to `recordSyncFailure`, then re-call with counts at end [src/app/api/webhooks/clay/route.ts:198, 335]
+- [ ] [Review][Patch] P13 — Simplify `v_bucket` double time-zone conversion (cosmetic — harmless in UTC but obscures intent) [supabase/migrations/2026-04-15-story-2-8-clay-hourly-bucket.sql:56]
+
+### Deferred (real but pre-existing or out of scope)
+
+- [x] [Review][Defer] D1 — `ingestion_state` downgrade in `upsert_candidate_batch` ON CONFLICT: whitelist only covers `active` and `pending_review`; hypothetical terminal states (`archived`, `rejected`, `hired`) would be stomped back to `pending_dedup` by a Clay re-push [supabase/schema.sql upsert_candidate_batch RPC] — deferred, pre-existing in the shared RPC (not Clay-specific); affects every ingestion source; not worth mixing with Story 2.8 scope. Flag for a future shared-RPC hardening pass.
+- [x] [Review][Defer] D2 — `sync_runs.total` accounting mismatch: `total = accepted + skipped + errored` but `skipped` is folded only into total, not stored separately, so `succeeded + failed ≠ total` on the dashboard [supabase/migrations/2026-04-15-story-2-8-clay-hourly-bucket.sql:68] — deferred, cosmetic dashboard-math interpretation gap; not worth a schema change.
+- [x] [Review][Defer] D3 — `__proto__` / `constructor` keys in Clay payload preserved under `extra_attributes.clay.*` [src/modules/ingestion/clay-mapper.ts:679-681] — deferred, theoretical; safe at write time (JSONB stringifies cleanly), risk surfaces only if a downstream Epic 4+ consumer does `Object.assign(target, clayBlob)`. Flag for future consumers to be aware.
+
+### Dismissed (not actionable)
+
+7 findings were dismissed as noise, false positives, or handled elsewhere: ON CONFLICT partial-index syntax concern (proven working in production), `last_refresh` ISO format drift (Clay's format is stable), epics.md AC drift vs hourly bucket (resolved by this story file), non-POST handler asymmetry (Next.js returns 405 automatically), intentional `coalesce(existing, excluded)` for `source_recruiter_actor_id` (preserves first-touch recruiter — working as designed), `first_name`/`last_name` non-string coercion (handled by the `null-name-safety` migration), `v_bucket` DST concern (no DST in UTC).
