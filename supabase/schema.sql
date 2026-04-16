@@ -1018,8 +1018,14 @@ begin
   loop
     v_email := nullif(trim(coalesce(v_row->>'email', '')), '');
     v_phone := nullif(trim(coalesce(v_row->>'phone', '')), '');
-    v_first_name := nullif(trim(coalesce(v_row->>'first_name', '')), '');
-    v_last_name := nullif(trim(coalesce(v_row->>'last_name', '')), '');
+    -- Story 2.8 null-safety: first_name/last_name default to empty string, not
+    -- NULL. candidates.first_name and candidates.last_name are NOT NULL with
+    -- DEFAULT '', and we want empty-string (matching default) semantics for
+    -- sources that don't provide names. Original code used nullif(..., '')
+    -- which converted empty to NULL and broke the NOT NULL constraint on
+    -- permissive enrichment sources like Clay.
+    v_first_name := trim(coalesce(v_row->>'first_name', ''));
+    v_last_name  := trim(coalesce(v_row->>'last_name', ''));
 
     if v_email is not null and v_email != '' then
       insert into cblaero_app.candidates (
