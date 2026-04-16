@@ -1,4 +1,4 @@
-import { fetchCeipalApplicants, mapCeipalApplicantToCandidate } from '../ats';
+import { fetchCeipalApplicants, mapCeipalApplicantToCandidate, getCeipalCreatedOn } from '../ats';
 import { MicrosoftGraphEmailParser } from '../email';
 import { acquireGraphToken } from '../email/graph-auth';
 import { getSupabaseAdminClient, isSupabaseConfigured } from '../persistence';
@@ -90,7 +90,7 @@ export class CeipalIngestionJob implements SchedulerJob {
     const runId = await createSyncRun('ceipal');
     try {
       const startPage = params?.startPage ?? 1;
-      const maxPages = params?.maxPages ?? 5;
+      const maxPages = params?.maxPages ?? 50;
 
       let since = params?.since;
       if (!since && !(params?.startPage && params.startPage > 1)) {
@@ -101,68 +101,79 @@ export class CeipalIngestionJob implements SchedulerJob {
         }
       }
 
-      const applicants = await fetchCeipalApplicants({
-        startPage,
-        maxPages,
-        since,
-      });
+      // Page-by-page fetch with per-page fingerprint check and early exit
+      const PAGE_SIZE = 50;
+      let page = startPage;
+      const endPage = startPage + maxPages - 1;
+      let consecutiveSkippedPages = 0;
+      let totalFetched = 0;
+      let totalNew = 0;
+      let totalInserted = 0;
+      let totalFailed = 0;
 
-      console.log(`[CeipalIngestionJob] Fetched ${applicants.length} applicants (page ${startPage}, maxPages ${maxPages}${since ? `, since ${since.toISOString()}` : ''})`);
+      while (page <= endPage) {
+        const applicants = await fetchCeipalApplicants({ startPage: page, maxPages: 1, since });
+        if (applicants.length === 0) break;
+        totalFetched += applicants.length;
 
-      if (applicants.length === 0) {
-        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
-        return;
-      }
+        const candidates = applicants.map(mapCeipalApplicantToCandidate);
 
-      const candidates = applicants.map(mapCeipalApplicantToCandidate);
+        // Targeted fingerprint check for this page only
+        const pageHashes = candidates
+          .map((c) => {
+            const id = (c as Record<string, unknown>).ceipalId as string | undefined;
+            return id ? `ceipal:${id}` : null;
+          })
+          .filter((h): h is string => h !== null);
 
-      // Targeted fingerprint check: query DB for only the hashes we fetched (not all 731K+)
-      const candidateHashes = candidates
-        .map((c) => {
-          const id = (c as Record<string, unknown>).ceipalId as string | undefined;
-          return id ? `ceipal:${id}` : null;
-        })
-        .filter((h): h is string => h !== null);
+        const existing = await checkExistingFingerprints(DEFAULT_TENANT_ID, 'ats_external_id', pageHashes);
 
-      const existingFingerprints = await checkExistingFingerprints(DEFAULT_TENANT_ID, 'ats_external_id', candidateHashes);
+        const newCandidates = candidates.filter((c) => {
+          const ceipalId = (c as Record<string, unknown>).ceipalId as string | undefined;
+          if (!ceipalId) return true;
+          return !existing.has(`ceipal:${ceipalId}`);
+        });
 
-      const newCandidates = candidates.filter((c) => {
-        const ceipalId = (c as Record<string, unknown>).ceipalId as string | undefined;
-        if (!ceipalId) return true;
-        return !existingFingerprints.has(`ceipal:${ceipalId}`);
-      });
+        if (newCandidates.length === 0) {
+          consecutiveSkippedPages++;
+          if (consecutiveSkippedPages >= 3) {
+            console.log(`[CeipalIngestionJob] 3 consecutive pages with 0 new records — stopping at page ${page}`);
+            break;
+          }
+        } else {
+          consecutiveSkippedPages = 0;
+          totalNew += newCandidates.length;
 
-      const skipped = candidates.length - newCandidates.length;
-      console.log(`[CeipalIngestionJob] ${newCandidates.length} new, ${skipped} already fingerprinted of ${candidates.length} total`);
+          const { inserted, failed } = await batchUpsertCandidatesFromATS(newCandidates);
+          totalInserted += inserted;
+          totalFailed += failed;
 
-      if (newCandidates.length === 0) {
-        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: candidates.length });
-        return;
-      }
-
-      const { inserted, failed } = await batchUpsertCandidatesFromATS(newCandidates);
-
-      // Record fingerprints for newly processed candidates
-      const fingerprintEntries = newCandidates
-        .filter((c) => (c as Record<string, unknown>).ceipalId)
-        .map((c) => ({
-          tenantId: DEFAULT_TENANT_ID,
-          type: 'ats_external_id' as const,
-          hash: `ceipal:${(c as Record<string, unknown>).ceipalId}`,
-          source: 'ceipal' as const,
-        }));
-      if (fingerprintEntries.length > 0) {
-        try {
-          await recordFingerprintBatch(fingerprintEntries);
-          console.log(`[CeipalIngestionJob] Recorded ${fingerprintEntries.length} fingerprints`);
-        } catch (fpErr) {
-          console.error('[CeipalIngestionJob] Fingerprint batch recording failed:', fpErr instanceof Error ? fpErr.message : fpErr);
-          recordSyncFailure('ceipal', 'fingerprint-batch', fpErr, runId);
+          // Record fingerprints for newly processed candidates
+          const fpEntries = newCandidates
+            .filter((c) => (c as Record<string, unknown>).ceipalId)
+            .map((c) => ({
+              tenantId: DEFAULT_TENANT_ID,
+              type: 'ats_external_id' as const,
+              hash: `ceipal:${(c as Record<string, unknown>).ceipalId}`,
+              source: 'ceipal' as const,
+            }));
+          if (fpEntries.length > 0) {
+            try {
+              await recordFingerprintBatch(fpEntries);
+            } catch (fpErr) {
+              console.error('[CeipalIngestionJob] Fingerprint batch recording failed:', fpErr instanceof Error ? fpErr.message : fpErr);
+              recordSyncFailure('ceipal', 'fingerprint-batch', fpErr, runId);
+            }
+          }
         }
+
+        // Stop if partial page (last page of results)
+        if (applicants.length < PAGE_SIZE) break;
+        page++;
       }
 
-      console.log(`[CeipalIngestionJob] ${inserted} upserted, ${failed} failed`);
-      await completeSyncRun(runId, { succeeded: inserted, failed, total: newCandidates.length });
+      console.log(`[CeipalIngestionJob] Done: ${totalNew} new of ${totalFetched} fetched (${page - startPage + 1} pages scanned), ${totalInserted} upserted, ${totalFailed} failed`);
+      await completeSyncRun(runId, { succeeded: totalInserted, failed: totalFailed, total: totalFetched });
     } catch (err) {
       recordSyncFailure('ceipal', 'polling', err, runId);
       await failSyncRun(runId, err instanceof Error ? (err.stack ?? err.message) : String(err));

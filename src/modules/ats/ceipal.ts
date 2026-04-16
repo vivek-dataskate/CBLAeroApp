@@ -207,6 +207,11 @@ export async function fetchCeipalApplicants(options?: {
 /**
  * Map a Ceipal applicant to the ingestion candidate shape.
  */
+/** Extract the created_on timestamp from a CEIPAL applicant for cursor tracking */
+export function getCeipalCreatedOn(a: CeipalApplicant): string | undefined {
+  return a.created_on?.trim() || undefined;
+}
+
 export function mapCeipalApplicantToCandidate(a: CeipalApplicant): Record<string, unknown> {
   /** Trim whitespace, return undefined for empty */
   const clean = (v?: string | number | null) => {
