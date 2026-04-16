@@ -105,7 +105,7 @@ function StatusBadge({ status, enabled }: { status?: string; enabled: boolean })
 
 type EditingNextRun = { id: number; value: string };
 
-export default function SchedulerStatusCard() {
+export default function SchedulerStatusCard({ compact = false }: { compact?: boolean }) {
   const [definitions, setDefinitions] = useState<ScheduleDefinition[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -261,7 +261,57 @@ export default function SchedulerStatusCard() {
         </div>
       )}
 
-      {!loading && !fetchError && definitions.length > 0 && (
+      {!loading && !fetchError && definitions.length > 0 && compact && (
+        <ul className="divide-y divide-gray-100">
+          {definitions.map((def) => {
+            const isTriggeringThis = triggering === def.id;
+            const isTogglingThis = toggling === def.id;
+            const err = rowError[def.id];
+
+            return (
+              <li key={def.id} className="py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-cbl-navy">{def.name}</span>
+                      <StatusBadge status={def.last_run?.status} enabled={def.enabled} />
+                    </div>
+                    <span className="text-xs text-gray-400" title={def.cron_expression}>
+                      {cronToHuman(def.cron_expression)}
+                    </span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={() => handleTrigger(def)}
+                      disabled={isTriggeringThis}
+                      className="rounded-lg bg-cbl-navy px-2.5 py-1 text-xs font-medium text-white hover:bg-cbl-navy/80 disabled:opacity-50"
+                    >
+                      {isTriggeringThis ? "…" : "Run"}
+                    </button>
+                    <button
+                      onClick={() => handleToggleEnabled(def)}
+                      disabled={isTogglingThis}
+                      className={`rounded-lg border px-2 py-1 text-xs font-medium disabled:opacity-50 ${
+                        def.enabled
+                          ? "border-gray-300 text-gray-500 hover:border-red-300 hover:text-red-600"
+                          : "border-green-300 text-green-700 hover:bg-green-50"
+                      }`}
+                    >
+                      {isTogglingThis ? "…" : def.enabled ? "Pause" : "Enable"}
+                    </button>
+                  </div>
+                </div>
+                {err && <p className="mt-1 text-xs text-red-600">{err}</p>}
+                {def.last_run?.status === "failed" && def.last_run.error_message && (
+                  <p className="mt-1 text-xs text-amber-700">Last error: {def.last_run.error_message}</p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {!loading && !fetchError && definitions.length > 0 && !compact && (
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead className="border-b border-gray-100 bg-gray-50/50">
@@ -283,34 +333,24 @@ export default function SchedulerStatusCard() {
                 const err = rowError[def.id];
 
                 return (
-                  // P7: Fragment with key for stable React reconciliation
                   <Fragment key={def.id}>
                     <tr className="text-sm text-gray-700">
-                      {/* Job name */}
                       <td className="px-3 py-3">
                         <span className="font-medium text-cbl-navy">{def.name}</span>
                         <br />
                         <span className="font-mono text-xs text-gray-400">{def.job_key}</span>
                       </td>
-
-                      {/* Schedule (read-only, human-readable) */}
                       <td className="px-3 py-3">
                         <span className="text-xs text-gray-700" title={def.cron_expression}>
                           {cronToHuman(def.cron_expression)}
                         </span>
                       </td>
-
-                      {/* Last run status */}
                       <td className="px-3 py-3">
                         <StatusBadge status={def.last_run?.status} enabled={def.enabled} />
                       </td>
-
-                      {/* Last run time */}
                       <td className="px-3 py-3 text-xs text-gray-500">
                         {relativeTime(def.last_run?.completed_at ?? def.last_run?.started_at ?? null)}
                       </td>
-
-                      {/* Next run — editable inline */}
                       <td className="px-3 py-3 text-xs text-gray-500">
                         {isEditingNextRunThis ? (
                           <div className="flex items-center gap-1">
@@ -337,7 +377,6 @@ export default function SchedulerStatusCard() {
                         ) : (
                           <button
                             onClick={() => {
-                              // Pre-fill with current next_run_at formatted for datetime-local
                               const d = new Date(def.next_run_at);
                               const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
                                 .toISOString()
@@ -351,11 +390,8 @@ export default function SchedulerStatusCard() {
                           </button>
                         )}
                       </td>
-
-                      {/* Actions */}
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
-                          {/* Run now */}
                           <button
                             onClick={() => handleTrigger(def)}
                             disabled={isTriggeringThis}
@@ -363,8 +399,6 @@ export default function SchedulerStatusCard() {
                           >
                             {isTriggeringThis ? "Running…" : "Run now"}
                           </button>
-
-                          {/* Pause / Enable */}
                           <button
                             onClick={() => handleToggleEnabled(def)}
                             disabled={isTogglingThis}
@@ -379,17 +413,11 @@ export default function SchedulerStatusCard() {
                         </div>
                       </td>
                     </tr>
-
-                    {/* Row-level error */}
                     {err && (
                       <tr key={`err-${def.id}`}>
-                        <td colSpan={6} className="bg-red-50 px-4 py-2 text-xs text-red-700">
-                          {err}
-                        </td>
+                        <td colSpan={6} className="bg-red-50 px-4 py-2 text-xs text-red-700">{err}</td>
                       </tr>
                     )}
-
-                    {/* Failed run error detail */}
                     {def.last_run?.status === "failed" && def.last_run.error_message && (
                       <tr key={`detail-${def.id}`}>
                         <td colSpan={6} className="border-t border-gray-100 bg-amber-50 px-4 py-2 text-xs text-amber-800">
