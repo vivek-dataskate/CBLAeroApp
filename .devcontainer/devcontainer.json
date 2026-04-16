@@ -11,14 +11,15 @@
       "extensions": [
         "anthropic.claude-code",
         "github.codespaces",
+        "github.copilot",
         "github.copilot-chat",
         "github.github-vscode-theme",
         "github.vscode-pull-request-github",
+        "github.vscode-github-actions",
         "ms-azuretools.vscode-containers",
         "ms-ossdata.vscode-pgsql",
         "rdudiver.bmad-viewer-vscode",
         "vitest.explorer",
-        "GitHub.vscode-github-actions",
         "bradlc.vscode-tailwindcss",
         "esbenp.prettier-vscode",
         "dbaeumer.vscode-eslint",
@@ -37,8 +38,8 @@
         "editor.formatOnSave": true,
         "editor.defaultFormatter": "esbenp.prettier-vscode",
         "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" },
-        "typescript.tsdk": "node_modules/typescript/lib",
-        "typescript.enablePromptUseWorkspaceTsdk": true,
+        "js/ts.tsdk.path": "node_modules/typescript/lib",
+        "js/ts.tsdk.promptToUseWorkspaceVersion": true,
         "terminal.integrated.defaultProfile.linux": "bash",
         "github.copilot.enable": { "*": true }
       }
@@ -47,11 +48,11 @@
   "forwardPorts": [3000, 54321, 54322, 54323],
   "portsAttributes": {
     "3000": { "label": "Next.js App", "onAutoForward": "notify" },
-    "54321": { "label": "Supabase API", "onAutoForward": "silent" },anthropic.claude-code --force && code --install-extension github.codespaces --force && code --install-extension github.copilot-chat --force && code --install-extension github.github-vscode-theme --force && code --install-extension github.vscode-pull-request-github --force && code --install-extension ms-azuretools.vscode-containers --force && code --install-extension ms-ossdata.vscode-pgsql --force && code --install-extension rdudiver.bmad-viewer-vscode --force && code --install-extension vitest.explorer
+    "54321": { "label": "Supabase API", "onAutoForward": "silent" },
     "54322": { "label": "Supabase DB", "onAutoForward": "silent" },
     "54323": { "label": "Supabase Studio", "onAutoForward": "notify" }
   },
-  "postCreateCommand": "bash .devcontainer/setup.sh && echo 'Installing VS Code extensions...' && code --install-extension GitHub.copilot --force && code --install-extension GitHub.vscode-github-actions --force && code --install-extension bradlc.vscode-tailwindcss --force && code --install-extension dbaeumer.vscode-eslint --force && code --install-extension prisma.prisma --force && code --install-extension eamodio.gitlens --force && code --install-extension usernamehw.errorlens --force && code --install-extension ms-vscode.vscode-json --force && code --install-extension redhat.vscode-yaml --force && code --install-extension ms-vscode-remote.remote-containers --force",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
   "postStartCommand": "bash scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1 || true && nohup bash -c 'while true; do sleep 3600 && bash /workspaces/CBLAeroApp/scripts/backup-artifacts.sh >> /tmp/backup.log 2>&1; done' > /dev/null 2>&1 &",
   "remoteEnv": { "NODE_ENV": "development" },
   "mounts": [],
