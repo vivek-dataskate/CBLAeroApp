@@ -3,8 +3,8 @@ services:
     name: cblaero
     runtime: node
     region: oregon
-    buildCommand: NODE_OPTIONS="" npm install && NODE_OPTIONS="" npm run build
-    startCommand: node .next/standalone/server.js
+    buildCommand: NODE_OPTIONS="" npm install && NODE_OPTIONS="" npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public 2>/dev/null || true
+    startCommand: HOSTNAME=0.0.0.0 node .next/standalone/server.js
     nodeVersion: "24"
     plan: starter
     healthCheckPath: /api/health
