@@ -188,6 +188,33 @@ describe('EmailIngestionJob', () => {
     expect(mocks.upsertCandidateFromEmailFull).toHaveBeenCalledTimes(1);
   });
 
+  it('records file_sha256 fingerprint for email attachments (cross-source dedup)', async () => {
+    const pdfBuffer = Buffer.from('fake-pdf-content');
+    mocks.parseInbox.mockResolvedValue([
+      {
+        id: 'msg-att-1',
+        mailbox: 'test@test.com',
+        candidate: { firstName: 'Jane', email: 'jane@test.com' },
+        subject: 'Resume attached',
+        body: '',
+        receivedAt: '2026-01-01',
+        attachments: [{ filename: 'resume.pdf', content: pdfBuffer }],
+      },
+    ]);
+    mocks.computeFileHash.mockReturnValue('abc123sha');
+
+    const job = new EmailIngestionJob();
+    await job.run();
+
+    // Should record both email_message_id AND file_sha256 fingerprints
+    expect(mocks.recordFingerprint).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'email_message_id', hash: 'msg-att-1', source: 'email' }),
+    );
+    expect(mocks.recordFingerprint).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'file_sha256', hash: 'abc123sha', source: 'email' }),
+    );
+  });
+
   it('continues processing after per-record error', async () => {
     mocks.parseInbox.mockResolvedValue([
       { id: 'msg-1', mailbox: 'test@test.com', candidate: {}, subject: 'S1', body: '', receivedAt: '', attachments: [] },

@@ -133,7 +133,7 @@ so that redundant LLM extraction calls, enrichment API calls, and unnecessary da
 
 | Type | Hash Input | Used By |
 |------|-----------|---------|
-| `file_sha256` | `SHA-256(raw file bytes)` | PDF resume upload, OneDrive poller |
+| `file_sha256` | `SHA-256(raw file bytes)` | PDF resume upload, OneDrive poller, Email ingestion (attachments) |
 | `email_message_id` | Graph API `message.id` (as-is, not hashed) | Email ingestion |
 | `csv_row_hash` | `SHA-256(lower(email)\|lower(first+last)\|phone)` | CSV upload |
 | `ats_external_id` | `ceipal:{applicant_id}` (as-is, not hashed) | Ceipal ATS sync |
@@ -217,6 +217,7 @@ Claude Opus 4.6 (1M context)
 
 ### Change Log
 
+- 2026-04-16: Cross-source dedup fix — email ingestion now records `file_sha256` for each attachment so OneDrive poller skips same PDF without LLM cost
 - 2026-04-03: Story 1.11 implemented — centralized content fingerprint gate for all ingestion paths
 - 2026-04-03: Code review — 7 HIGH, 5 MEDIUM, 5 LOW findings. All HIGH and MEDIUM fixed:
   - H1: Fixed `.ceipal_id` → `.ceipalId` (wrong field name blocked all Ceipal syncs)

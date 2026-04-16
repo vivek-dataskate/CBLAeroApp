@@ -64,6 +64,16 @@ export class EmailIngestionJob implements SchedulerJob {
         async (record) => {
           const result = await upsertCandidateFromEmailFull(record);
           await recordFingerprint({ tenantId: DEFAULT_TENANT_ID, type: 'email_message_id', hash: record.id, source: 'email' });
+
+          // Record file_sha256 for each attachment so OneDrive ingestion
+          // can skip the same PDF without paying for LLM extraction again.
+          for (const att of record.attachments ?? []) {
+            if (att.content?.length) {
+              const fileHash = computeFileHash(att.content);
+              await recordFingerprint({ tenantId: DEFAULT_TENANT_ID, type: 'file_sha256', hash: fileHash, source: 'email' }).catch(() => {});
+            }
+          }
+
           if (result === 'dedup_skip') {
             console.log(`[EmailIngestionJob] Dedup skip for ${record.subject}`);
           }
