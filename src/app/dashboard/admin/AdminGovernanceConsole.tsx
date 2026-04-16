@@ -136,8 +136,8 @@ export default function AdminGovernanceConsole({ tenantId, initialPayload }: Pro
         </div>
       )}
 
-      {/* Actions row — compact 3-column */}
-      <div className="grid gap-3 md:grid-cols-3">
+      {/* Actions row — stacks vertically in card, 3-col when wide */}
+      <div className="grid gap-3 xl:grid-cols-3">
         <form onSubmit={handleInvite} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
           <h3 className="text-xs font-semibold text-gray-700">Invite User</h3>
           <input value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} required type="email" placeholder="email@cblsolutions.com"
@@ -185,8 +185,8 @@ export default function AdminGovernanceConsole({ tenantId, initialPayload }: Pro
         {knownActorIds.map((id) => <option key={id} value={id} />)}
       </datalist>
 
-      {/* Users + Invitations side by side */}
-      <div className="grid gap-3 lg:grid-cols-2">
+      {/* Users + Invitations — stack in card, side-by-side when wide */}
+      <div className="grid gap-3 xl:grid-cols-2">
         <div>
           <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400">
             Users ({payload.users.length})

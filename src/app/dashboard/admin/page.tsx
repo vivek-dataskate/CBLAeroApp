@@ -101,7 +101,7 @@ export default async function AdminDashboardPage({
       </header>
 
       {/* Content */}
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-6">
+      <main className="w-full flex-1 px-6 py-6">
         {/* Client switcher + Quick links row */}
         <div className="flex flex-wrap items-center gap-4 rounded-xl border border-gray-200 px-5 py-3">
           {allowedClientIds.length > 1 && (

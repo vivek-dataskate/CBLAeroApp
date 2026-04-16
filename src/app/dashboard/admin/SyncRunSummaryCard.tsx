@@ -105,6 +105,7 @@ export default function SyncRunSummaryCard({ compact = false }: { compact?: bool
         const effectiveRuns = compact && !showAll ? runs.slice(0, COMPACT_LIMIT) : runs;
         const totalPages = Math.ceil(effectiveRuns.length / PAGE_SIZE);
         const pageRuns = compact && !showAll ? effectiveRuns : effectiveRuns.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+        const showPagination = totalPages > 1 && !(compact && !showAll);
 
         return (
         <div>
@@ -112,14 +113,12 @@ export default function SyncRunSummaryCard({ compact = false }: { compact?: bool
           <table className="w-full text-left">
             <thead className="border-b border-gray-100 bg-gray-50/50">
               <tr>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Source</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Started</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Duration</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">OK</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Failed</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Total</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
-                <th className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500" />
+                <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Source</th>
+                <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Started</th>
+                <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Dur.</th>
+                <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">OK</th>
+                <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Fail</th>
+                <th className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">Tot</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -131,29 +130,17 @@ export default function SyncRunSummaryCard({ compact = false }: { compact?: bool
                       className="cursor-pointer text-sm text-gray-700 transition-colors hover:bg-cbl-blue/5"
                       onClick={() => setExpandedRunId(isExpanded ? null : run.id)}
                     >
-                      <td className="px-3 py-2 font-medium">{run.source}</td>
-                      <td className="px-3 py-2 text-xs text-gray-500">{relativeTime(run.startedAt)}</td>
-                      <td className="px-3 py-2 text-xs text-gray-500">{duration(run.startedAt, run.completedAt)}</td>
-                      <td className="px-3 py-2 text-green-600">{run.succeeded}</td>
-                      <td className={`px-3 py-2 ${run.failed > 0 ? "text-red-600 font-medium" : "text-gray-400"}`}>{run.failed}</td>
-                      <td className="px-3 py-2">{run.total}</td>
-                      <td className="px-3 py-2"><StatusBadge status={run.status} /></td>
-                      <td className="px-3 py-2">
-                        {run.failed > 0 && (
-                          <Link
-                            href={`/dashboard/admin/sync-errors?runId=${run.id}`}
-                            className="text-xs font-medium text-cbl-blue hover:text-cbl-blue/80"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            View Errors
-                          </Link>
-                        )}
-                      </td>
+                      <td className="px-2 py-1.5 text-xs font-medium">{run.source}</td>
+                      <td className="px-2 py-1.5 text-xs text-gray-500">{relativeTime(run.startedAt)}</td>
+                      <td className="px-2 py-1.5 text-xs text-gray-500">{duration(run.startedAt, run.completedAt)}</td>
+                      <td className="px-2 py-1.5 text-xs text-green-600">{run.succeeded}</td>
+                      <td className={`px-2 py-1.5 text-xs ${run.failed > 0 ? "text-red-600 font-medium" : "text-gray-400"}`}>{run.failed}</td>
+                      <td className="px-2 py-1.5 text-xs">{run.total}</td>
                     </tr>
 
                     {isExpanded && (
                       <tr>
-                        <td colSpan={8} className="border-t border-gray-100 bg-gray-50 px-5 py-3">
+                        <td colSpan={6} className="border-t border-gray-100 bg-gray-50 px-3 py-2">
                           <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
                             <dt className="font-semibold text-gray-500">Run ID</dt>
                             <dd className="font-mono text-gray-700">{run.id}</dd>
@@ -197,52 +184,32 @@ export default function SyncRunSummaryCard({ compact = false }: { compact?: bool
           </table>
           </div>
 
-          {/* Compact: "View All" toggle; Full: pagination */}
+          {/* Compact: "View All" / "Show recent" toggle */}
           {compact && !showAll && runs.length > COMPACT_LIMIT && (
-            <div className="border-t border-gray-100 px-3 py-2 text-center">
-              <button
-                type="button"
-                onClick={() => setShowAll(true)}
-                className="text-xs font-medium text-cbl-blue hover:text-cbl-blue/80"
-              >
+            <div className="border-t border-gray-100 px-2 py-2 text-center">
+              <button type="button" onClick={() => { setShowAll(true); setPage(0); }} className="text-xs font-medium text-cbl-blue hover:text-cbl-blue/80">
                 View all {runs.length} runs
               </button>
             </div>
           )}
           {compact && showAll && (
-            <div className="border-t border-gray-100 px-3 py-2 text-center">
-              <button
-                type="button"
-                onClick={() => setShowAll(false)}
-                className="text-xs font-medium text-gray-400 hover:text-gray-600"
-              >
+            <div className="border-t border-gray-100 px-2 py-1 text-center">
+              <button type="button" onClick={() => { setShowAll(false); setPage(0); }} className="text-xs font-medium text-gray-400 hover:text-gray-600">
                 Show recent only
               </button>
             </div>
           )}
-          {!compact && totalPages > 1 && (
-            <div className="flex items-center justify-between border-t border-gray-100 px-3 py-2">
+
+          {/* Pagination — shown in full mode OR compact+showAll */}
+          {showPagination && (
+            <div className="flex items-center justify-between border-t border-gray-100 px-2 py-1.5">
               <span className="text-xs text-gray-400">
-                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, runs.length)} of {runs.length} runs
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, effectiveRuns.length)} of {effectiveRuns.length}
               </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={page <= 0}
-                  className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-30"
-                >
-                  Prev
-                </button>
+              <div className="flex items-center gap-1.5">
+                <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page <= 0} className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-30">Prev</button>
                 <span className="text-xs text-gray-500">{page + 1}/{totalPages}</span>
-                <button
-                  type="button"
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                  disabled={page >= totalPages - 1}
-                  className="rounded-lg border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-30"
-                >
-                  Next
-                </button>
+                <button type="button" onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-30">Next</button>
               </div>
             </div>
           )}
