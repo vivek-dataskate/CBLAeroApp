@@ -110,6 +110,10 @@ so that candidate records are continuously synchronized from external sources.
 - [x] [AI-Review][HIGH] `listRecentSyncErrors()` not wrapped in try/catch in admin page.tsx — DB failure crashed entire page. **Fixed: wrapped in try/catch.**
 - [x] [AI-Review][MEDIUM] Date-only `since` filter in Ceipal causes boundary overlap — added truncation warning log when maxPages hit.
 
+### Post-Ship Fixes (2026-04-16) — Cross-Source Dedup
+
+- **Email→OneDrive cross-source dedup gap**: Email ingestion recorded `email_message_id` fingerprints but NOT `file_sha256` for attachments. When the same resume PDF was later uploaded to OneDrive, the OneDrive poller (which checks `file_sha256`) couldn't detect the duplicate and re-ran full LLM extraction. **Fixed**: Email handler now calls `computeFileHash()` on each attachment buffer and records a `file_sha256` fingerprint alongside the `email_message_id` fingerprint. OneDrive poller's existing `isAlreadyProcessed('file_sha256', hash)` check now catches cross-source duplicates at zero LLM cost.
+
 ### Post-Ship Fixes (2026-04-16)
 
 - **maxPages reduced from 50 to 5** (250 records per run) — CEIPAL was taking 12+ minutes to fetch 2,500 records, blocking all other scheduler jobs.
