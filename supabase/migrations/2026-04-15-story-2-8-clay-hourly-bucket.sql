@@ -20,8 +20,22 @@
 --   - Status is always 'complete' — the row represents a rolling aggregate,
 --     not a single run that can be in-flight.
 --
--- Cleanup: the existing ~30 noisy Clay sync_runs rows from the smoke tests
--- are deleted at the end of this migration to clean up the dashboard.
+-- Cleanup: originally this migration also ran
+--   DELETE FROM cblaero_app.sync_runs WHERE source = 'clay_enrichment';
+-- to wipe ~30 noisy per-request rows from the initial Story 2.8 rollout.
+-- ⚠️ LESSON LEARNED (2026-04-15): when this migration was applied, an unplanned
+-- real Clay backfill had already happened on the old per-request code path,
+-- so the DELETE also wiped ~5,953 legitimate rows of backfill observability
+-- history. The candidates themselves were safe (candidates table is the source
+-- of truth), but the dashboard lost visibility into the 22:00 UTC backfill
+-- window. Recovery: an aggregate 22:00 UTC bucket row was synthesized from
+-- candidates.created_at by querying the candidates table and inserting a
+-- single sync_runs row with the correct succeeded/failed/total counts.
+--
+-- The DELETE has been removed from this migration. Future re-applies (fresh
+-- envs, branch previews, local Supabase reset) will no longer destroy Clay
+-- history. Never put a destructive DELETE on audit/observability tables in a
+-- schema migration — use a separate, explicit cleanup script if needed.
 --
 -- Safe to run repeatedly (idempotent).
 
@@ -65,8 +79,9 @@ comment on function cblaero_app.upsert_clay_hourly_sync_run(int, int, int) is
   'Every call inserts or increments a single row keyed by (source, date_trunc(hour, now())). '
   'Replaces the per-request createSyncRun/completeSyncRun pair in the webhook handler.';
 
--- ── Cleanup: drop the noisy per-request Clay rows from the initial rollout ──
--- These were created before the hourly bucket design landed. Only the bucket
--- rows (after this migration runs) should remain.
-delete from cblaero_app.sync_runs
-where source = 'clay_enrichment';
+-- ── Cleanup DELETE intentionally removed (see lesson-learned comment above) ──
+-- The original version of this migration destroyed legitimate backfill
+-- observability data. Leaving this section here as a marker so future diffs
+-- don't reintroduce the DELETE. Any one-off cleanup of stale sync_runs rows
+-- must be done with an explicit, auditable SQL script — NOT inside a
+-- reusable migration file.
