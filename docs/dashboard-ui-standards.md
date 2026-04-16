@@ -37,8 +37,9 @@ Every dashboard page uses the same flex column structure:
 
 ### Container Width
 
-- All content uses `max-w-6xl mx-auto px-6` for consistent horizontal bounds.
-- Never use `max-w-5xl`, `max-w-4xl`, `max-w-7xl`, or other widths on dashboard pages.
+- Most dashboard pages use `max-w-6xl mx-auto px-6` for consistent horizontal bounds.
+- **Admin Console exception**: The admin page uses `w-full px-6` (no max-width) because the 2x2 grid with data-dense modules needs all available horizontal space. This avoids horizontal scrolling in tables and cramped form layouts.
+- Never use `max-w-5xl`, `max-w-4xl`, or narrower widths on dashboard pages.
 
 ---
 

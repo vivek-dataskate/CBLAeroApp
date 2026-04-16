@@ -277,7 +277,7 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
                       <StatusBadge status={def.last_run?.status} enabled={def.enabled} />
                     </div>
                     <span className="text-xs text-gray-400" title={def.cron_expression}>
-                      {cronToHuman(def.cron_expression)}
+                      {cronToHuman(def.cron_expression)} · <span className="text-gray-500">{relativeTimeFuture(def.next_run_at)}</span>
                     </span>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
