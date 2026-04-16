@@ -236,6 +236,8 @@ extractCandidateFromDocument(
 - **Admin observability** reuses the existing Story 2.4b sync runs dashboard. The Story 2.7a scheduler dashboard is **not** extended — Clay has no scheduled job to list because it's push-driven.
 - **Debug mode:** `CLAY_WEBHOOK_DEBUG=true` (default during rollout) dumps the raw payload on every request so mapper drift can be detected and fixed quickly. Toggle off once the mapper is stable in production.
 - **Backfill of existing ~9,000 rows:** re-fire the Clay HTTP API column on all rows via "Run on all rows" from the column menu. The same webhook handles net-new rows and backfill uniformly; fingerprint idempotency prevents duplicate work on second re-runs.
+- **Sync run aggregation — hourly buckets (post-rollout fix, 2026-04-15):** Clay is the **only** ingestion source whose `sync_runs` rows are aggregated into hourly buckets. All other sources (ATS, Ceipal, email, OneDrive, dedup, role-enrichment) continue to write one `sync_runs` row per logical run. Rationale: Clay's HTTP API column fires one HTTP request per row, so a ~9k-row backfill produces ~9k webhook requests within minutes. Writing one `sync_runs` row per request would flood the Story 2.4b admin dashboard with unusable noise. The hourly-bucket RPC (`upsert_clay_hourly_sync_run`) atomically inserts-or-increments a single row keyed by `(source='clay_enrichment', started_at=date_trunc('hour', now()))` via `ON CONFLICT DO UPDATE`, with race-safe counter math under concurrent webhook fire. A partial unique index scoped to `WHERE source='clay_enrichment'` restricts bucketing to Clay without changing the schema for other sources. The webhook invokes this RPC **once per request** after processing all rows (not once per row), and **RPC failures are swallowed** — observability must never block candidate ingestion.
+- **Provenance preserve-if-set merge rule:** `candidates.source_recruiter_actor_id` uses a `coalesce(existing, excluded)` merge in the `upsert_candidate_batch` RPC's `ON CONFLICT DO UPDATE` branch. The first Clay ingestion *stamps* the default assignee; subsequent updates from any source (Clay re-enrichment, ATS, CSV, email) never overwrite. This is the canonical pattern for provenance columns going forward: **write-once via RPC coalesce, not via application-level read-before-write.** When Epic 4's real candidate assignment model lands, it can retrofit recruiter attribution without losing stamped values and without coordinating with every ingestion caller.
 
 **Clay flow direction — inbound vs outbound:**
 
@@ -1287,6 +1289,17 @@ All dashboard pages follow a unified design system documented in [`cblaero/docs/
 - Minimum font size `text-xs` (12px) — no arbitrary pixel values like `text-[10px]`
 - Dev agents creating or modifying dashboard pages MUST read the full standards doc first
 - Code review validates UI standards compliance for any `src/app/dashboard/` changes (see development-standards.md §27)
+
+### Observability Table Mutations
+
+**Decision (2026-04-15, from Story 2.8 postmortem):** Migrations MUST NOT issue `DELETE` or `UPDATE` against observability tables (`sync_runs`, `sync_run_errors`, `content_fingerprints`, audit logs, scheduler run history). Schema changes to those tables are allowed; row mutations are not.
+
+**Why:** During Story 2.8 an "innocent cleanup" `DELETE FROM sync_runs WHERE source='clay_enrichment'` was bundled into the hourly-bucket migration to remove ~30 noisy per-request rows from an earlier rollout. A real ~9k-row Clay backfill happened in parallel, and the DELETE removed ~5,953 legitimate rows before anyone noticed. Observability data is authoritative evidence of what happened in production; once deleted, it cannot be reconstructed. Migrations run automatically on deploy and are the worst place to couple destructive cleanup with a schema change.
+
+**How to apply:**
+- **Schema changes only** in migration files touching observability tables — `ALTER TABLE`, `CREATE INDEX`, `CREATE OR REPLACE FUNCTION`, `CREATE TRIGGER`. No `DELETE`, no mutating `UPDATE`.
+- If a cleanup is genuinely needed, it runs as a **separate, explicitly-invoked admin task** outside the deploy pipeline, with an auditable approval step.
+- This rule is mirrored in [development-standards.md §3 Data Ingestion Standards](development-standards.md).
 
 ## Architecture Resilience Decisions
 
