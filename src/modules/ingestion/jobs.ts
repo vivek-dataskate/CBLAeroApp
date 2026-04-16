@@ -1122,7 +1122,7 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
   scheduler.register(new CeipalIngestionJob(), {
     jobKey: 'ceipal-sync',
     scheduleName: 'CEIPAL ATS Candidate Sync',
-    cronExpression: '0 2 * * *',
+    cronExpression: '0 * * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'ceipal_sync',
   });

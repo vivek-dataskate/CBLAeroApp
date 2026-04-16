@@ -78,7 +78,8 @@ export async function batchUpsertCandidatesFromATS(records: Record<string, unkno
       await batchUpsertCandidatesByEmail(withEmail);
       totalInserted += withEmail.length;
     } catch (upsertErr) {
-      console.error(`[Ingestion] Batch upsert (with email) failed: ${upsertErr instanceof Error ? upsertErr.message : upsertErr}`);
+      const batchSource = validRecords[0]?.source ?? 'ats';
+      console.error(`[Ingestion:${batchSource}] Batch upsert (with email) failed: ${upsertErr instanceof Error ? upsertErr.message : upsertErr}`);
       // Fall back to individual inserts
       for (const record of validRecords.filter((r) => r.email)) {
         try { await upsertCandidateFromATS(record); totalInserted++; } catch (err) {
@@ -94,18 +95,20 @@ export async function batchUpsertCandidatesFromATS(records: Record<string, unkno
       await batchInsertCandidatesNoEmail(withoutEmail);
       totalInserted += withoutEmail.length;
     } catch (insertErr) {
-      console.error(`[Ingestion] Batch insert (no email) failed: ${insertErr instanceof Error ? insertErr.message : insertErr}`);
+      const noEmailSource = validRecords[0]?.source ?? 'ats';
+      console.error(`[Ingestion:${noEmailSource}] Batch insert (no email) failed: ${insertErr instanceof Error ? insertErr.message : insertErr}`);
       failed += withoutEmail.length;
     }
   }
 
-  console.log(`[Ingestion] Batch upserted ${totalInserted} candidates`);
+  const logSource = validRecords[0]?.source ?? 'ats';
+  console.log(`[Ingestion:${logSource}] Batch upserted ${totalInserted} candidates`);
   return { inserted: totalInserted, failed };
 }
 
 export async function upsertCandidateFromATS(record: Record<string, unknown>): Promise<void> {
   if (!isSupabaseConfigured()) {
-    console.log('[Ingestion] Supabase not configured — skipping persist:', record.email ?? record.firstName);
+    console.log(`[Ingestion:${record.source ?? 'ats'}] Supabase not configured — skipping persist:`, record.email ?? record.firstName);
     return;
   }
 
@@ -123,10 +126,10 @@ export async function upsertCandidateFromATS(record: Record<string, unknown>): P
 
   if (email) {
     await upsertCandidateByEmail(candidateRow);
-    console.log(`[Ingestion] Upserted candidate ${email}`);
+    console.log(`[Ingestion:${source}] Upserted candidate ${email}`);
   } else {
     await insertCandidateNoEmail(candidateRow);
-    console.log(`[Ingestion] Inserted candidate (no email): ${record.firstName} ${record.lastName}`);
+    console.log(`[Ingestion:${source}] Inserted candidate (no email): ${record.firstName} ${record.lastName}`);
   }
 }
 
@@ -139,7 +142,7 @@ export async function upsertCandidateFromEmailFull(record: {
   receivedAt: string;
 }): Promise<'processed' | 'dedup_skip' | void> {
   if (!isSupabaseConfigured()) {
-    console.log('[Ingestion] Supabase not configured — skipping email persist:', record.subject);
+    console.log('[Ingestion:email] Supabase not configured — skipping email persist:', record.subject);
     return;
   }
 
@@ -149,7 +152,7 @@ export async function upsertCandidateFromEmailFull(record: {
   // 1. Dedup check FIRST — skip all DB writes if this email was already processed
   const existingSub = await findSubmissionByMessageId(record.id, DEFAULT_TENANT_ID);
   if (existingSub) {
-    console.log(`[Ingestion] Skipping already-processed email: ${record.subject}`);
+    console.log(`[Ingestion:email] Skipping already-processed email: ${record.subject}`);
     return 'dedup_skip';
   }
 
@@ -168,7 +171,7 @@ export async function upsertCandidateFromEmailFull(record: {
     record.candidate.deducedRoles = roleResult.roles;
     record.candidate.roleDeductionMetadata = roleResult.metadata;
   } catch (err) {
-    console.warn(`[Ingestion] Role deduction failed for email "${record.subject}":`, err instanceof Error ? err.message : err);
+    console.warn(`[Ingestion:email] Role deduction failed for email "${record.subject}":`, err instanceof Error ? err.message : err);
     // Non-fatal — candidate proceeds with empty deduced_roles
   }
 
@@ -179,12 +182,12 @@ export async function upsertCandidateFromEmailFull(record: {
 
   if (email) {
     candidateId = await upsertCandidateByEmail(candidateRow);
-    console.log(`[Ingestion] Upserted candidate ${email} from email`);
+    console.log(`[Ingestion:email] Upserted candidate ${email}`);
   } else if (phone) {
     candidateId = await insertCandidateNoEmail(candidateRow);
   } else {
     // No email or phone — can't create candidate, but still save submission evidence
-    console.warn(`[Ingestion] No email or phone for "${record.subject}" — saving submission evidence only`);
+    console.warn(`[Ingestion:email] No email or phone for "${record.subject}" — saving submission evidence only`);
   }
 
   // 3. Build submission record
@@ -204,7 +207,7 @@ export async function upsertCandidateFromEmailFull(record: {
       const result = await uploadAttachmentToStorage(null, att.content, att.filename, candidateId ?? 'no-candidate', submissionId);
       attachmentMeta.push(result);
     } catch (err) {
-      console.warn(`[Ingestion] Attachment upload failed for ${att.filename}:`, err instanceof Error ? err.message : err);
+      console.warn(`[Ingestion:email] Attachment upload failed for ${att.filename}:`, err instanceof Error ? err.message : err);
       attachmentMeta.push({ filename: att.filename, url: '', size: att.content.length });
     }
   }
@@ -226,7 +229,7 @@ export async function upsertCandidateFromEmailFull(record: {
       attachments: attachmentMeta,
     });
     const attCount = attachmentMeta.filter((a) => a.url).length;
-    console.log(`[Ingestion] Saved submission evidence for ${record.subject} (${attCount} attachments uploaded)`);
+    console.log(`[Ingestion:email] Saved submission evidence for ${record.subject} (${attCount} attachments uploaded)`);
 
     // Record engagement signal — email submission means recruiter talked to candidate
     if (candidateId) {
@@ -234,11 +237,11 @@ export async function upsertCandidateFromEmailFull(record: {
         source: 'email_submission',
         emailSubject: record.subject,
       }).catch((err) => {
-        console.warn(`[Ingestion] Engagement signal failed for ${candidateId}:`, err instanceof Error ? err.message : err);
+        console.warn(`[Ingestion:email] Engagement signal failed for ${candidateId}:`, err instanceof Error ? err.message : err);
       });
     }
   } catch (subError) {
-    console.error(`[Ingestion] Submission evidence insert failed: ${subError instanceof Error ? subError.message : subError}`);
+    console.error(`[Ingestion:email] Submission evidence insert failed: ${subError instanceof Error ? subError.message : subError}`);
     recordSyncFailure('email', record.id, subError);
   }
 }
