@@ -124,30 +124,22 @@ export default async function AdminDashboardPage({
           <span className="flex-1" />
         </div>
 
-        {/* Scheduler status */}
-        <div className="mt-4">
-          <CollapsibleCard title="Scheduler Status" defaultOpen>
-            <SchedulerStatusCard />
-          </CollapsibleCard>
-        </div>
-
-        {/* Two-column: Sync runs + AI costs */}
+        {/* 2x2 grid: all modules equal, all open by default */}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <CollapsibleCard title="Scheduler Status" defaultOpen>
+            <SchedulerStatusCard compact />
+          </CollapsibleCard>
           <CollapsibleCard title="Sync Runs" defaultOpen>
-            <SyncRunSummaryCard />
+            <SyncRunSummaryCard compact />
           </CollapsibleCard>
-          <CollapsibleCard title="AI Costs">
-            <AiCostDashboard />
-          </CollapsibleCard>
-        </div>
-
-        {/* User governance */}
-        <div className="mt-4">
-          <CollapsibleCard title="User & Team Governance">
+          <CollapsibleCard title="User & Team Governance" defaultOpen>
             <AdminGovernanceConsole
               tenantId={activeClientId}
               initialPayload={{ users, invitations, adminActions, stepUpAttempts }}
             />
+          </CollapsibleCard>
+          <CollapsibleCard title="AI Costs" defaultOpen>
+            <AiCostDashboard />
           </CollapsibleCard>
         </div>
       </main>

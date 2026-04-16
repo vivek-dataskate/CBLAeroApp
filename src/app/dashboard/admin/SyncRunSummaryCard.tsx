@@ -53,13 +53,15 @@ function StatusBadge({ status }: { status: string }) {
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 const PAGE_SIZE = 10;
+const COMPACT_LIMIT = 5;
 
-export default function SyncRunSummaryCard() {
+export default function SyncRunSummaryCard({ compact = false }: { compact?: boolean }) {
   const [runs, setRuns] = useState<SyncRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     fetch("/api/internal/admin/sync-runs")
@@ -100,8 +102,9 @@ export default function SyncRunSummaryCard() {
       )}
 
       {!loading && !fetchError && runs.length > 0 && (() => {
-        const totalPages = Math.ceil(runs.length / PAGE_SIZE);
-        const pageRuns = runs.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+        const effectiveRuns = compact && !showAll ? runs.slice(0, COMPACT_LIMIT) : runs;
+        const totalPages = Math.ceil(effectiveRuns.length / PAGE_SIZE);
+        const pageRuns = compact && !showAll ? effectiveRuns : effectiveRuns.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
         return (
         <div>
@@ -194,8 +197,30 @@ export default function SyncRunSummaryCard() {
           </table>
           </div>
 
-          {/* Pagination */}
-          {totalPages > 1 && (
+          {/* Compact: "View All" toggle; Full: pagination */}
+          {compact && !showAll && runs.length > COMPACT_LIMIT && (
+            <div className="border-t border-gray-100 px-3 py-2 text-center">
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="text-xs font-medium text-cbl-blue hover:text-cbl-blue/80"
+              >
+                View all {runs.length} runs
+              </button>
+            </div>
+          )}
+          {compact && showAll && (
+            <div className="border-t border-gray-100 px-3 py-2 text-center">
+              <button
+                type="button"
+                onClick={() => setShowAll(false)}
+                className="text-xs font-medium text-gray-400 hover:text-gray-600"
+              >
+                Show recent only
+              </button>
+            </div>
+          )}
+          {!compact && totalPages > 1 && (
             <div className="flex items-center justify-between border-t border-gray-100 px-3 py-2">
               <span className="text-xs text-gray-400">
                 {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, runs.length)} of {runs.length} runs

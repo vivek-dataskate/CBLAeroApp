@@ -133,9 +133,29 @@ so that the application feels professional and I can navigate confidently across
 
 - [x] Task 17: Standardize all page headers — Sign Out button right side on every page, move page-specific controls (Saved Searches, client switcher) to content area
 
+### Post-Ship: Admin Console 2x2 Layout (2026-04-16)
+
+Findings from live dashboard review (screenshots reviewed with Vivek):
+
+**Problem**: Scheduler Status occupied full width with a 6-column table, pushing Sync Runs (200-row paginated table) and AI Costs into a cramped half-width row, while User & Team Governance was hidden collapsed at the bottom. The layout was scheduler-dominated — admins had to scroll past it to reach other modules.
+
+**Fix — 2x2 equal-weight grid**:
+- [x] Task 18: Rearrange admin page to `lg:grid-cols-2` grid — Scheduler + Sync Runs top row, Governance + AI Costs bottom row
+- [x] Task 19: Add `compact` prop to `SchedulerStatusCard` — dense list view (name + badge + schedule + Run/Pause buttons) instead of wide 6-column table. Full table still available via `compact={false}`.
+- [x] Task 20: Add `compact` prop to `SyncRunSummaryCard` — shows 5 most recent runs with "View All" toggle instead of full 200-row paginated table
+- [x] Task 21: All 4 modules `defaultOpen={true}` — no hidden sections; admins need at-a-glance visibility
+- [x] Task 22: Updated `docs/dashboard-ui-standards.md` with Admin Console Layout section (2x2 grid rules, module rules, editable scheduler cadence spec)
+
+**Files changed**:
+- `src/app/dashboard/admin/page.tsx` — layout from stacked to 2x2 grid, all modules defaultOpen
+- `src/app/dashboard/admin/SchedulerStatusCard.tsx` — added compact list view
+- `src/app/dashboard/admin/SyncRunSummaryCard.tsx` — added compact mode with 5-run limit and "View All"
+- `docs/dashboard-ui-standards.md` — Admin Console Layout section
+
 ## Change Log
 
 | Date | Change | Author |
 |------|--------|--------|
 | 2026-04-08 | Story created and implemented | Dev Agent |
 | 2026-04-08 | Header consistency fix: Sign Out on all pages, removed inconsistent Dashboard/Saved Searches buttons from headers | Dev Agent |
+| 2026-04-16 | Admin Console 2x2 layout: compact scheduler, recent-5 sync runs, all modules open by default | Claude Opus 4.6 |
