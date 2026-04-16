@@ -43,6 +43,42 @@ function relativeTimeFuture(iso: string | null): string {
   return `in ${Math.floor(hrs / 24)}d`;
 }
 
+function cronToHuman(cron: string): string {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return cron;
+  const [minute, hour, dom, month, dow] = parts;
+
+  // */N * * * * → Every N minutes
+  if (minute.startsWith("*/") && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    const n = Number(minute.slice(2));
+    return n === 1 ? "Every minute" : `Every ${n} minutes`;
+  }
+  // 0 */N * * * → Every N hours
+  if (minute === "0" && hour.startsWith("*/") && dom === "*" && month === "*" && dow === "*") {
+    const n = Number(hour.slice(2));
+    return n === 1 ? "Every hour" : `Every ${n} hours`;
+  }
+  // 0 * * * * → Every hour
+  if (minute === "0" && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    return "Every hour";
+  }
+  // 0 H * * * → Daily at H:00 UTC
+  if (minute === "0" && /^\d+$/.test(hour) && dom === "*" && month === "*" && dow === "*") {
+    const h = Number(hour);
+    const ampm = h < 12 ? "AM" : "PM";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `Daily at ${h12}:00 ${ampm} UTC`;
+  }
+  // M H * * * → Daily at H:MM UTC
+  if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && dom === "*" && month === "*" && dow === "*") {
+    const h = Number(hour);
+    const ampm = h < 12 ? "AM" : "PM";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `Daily at ${h12}:${minute.padStart(2, "0")} ${ampm} UTC`;
+  }
+  return cron;
+}
+
 function StatusBadge({ status, enabled }: { status?: string; enabled: boolean }) {
   if (!enabled) {
     return (
@@ -67,7 +103,6 @@ function StatusBadge({ status, enabled }: { status?: string; enabled: boolean })
   );
 }
 
-type EditingCron = { id: number; value: string };
 type EditingNextRun = { id: number; value: string };
 
 export default function SchedulerStatusCard() {
@@ -77,8 +112,6 @@ export default function SchedulerStatusCard() {
   const [triggering, setTriggering] = useState<number | null>(null);
   const [toggling, setToggling] = useState<number | null>(null);
   const [rowError, setRowError] = useState<Record<number, string>>({});
-  const [editingCron, setEditingCron] = useState<EditingCron | null>(null);
-  const [savingCron, setSavingCron] = useState<number | null>(null);
   const [editingNextRun, setEditingNextRun] = useState<EditingNextRun | null>(null);
   const [savingNextRun, setSavingNextRun] = useState<number | null>(null);
   // DN1: simple inline toast — no external library
@@ -169,28 +202,6 @@ export default function SchedulerStatusCard() {
     }
   };
 
-  const handleSaveCron = async (def: ScheduleDefinition) => {
-    if (!editingCron || editingCron.id !== def.id) return;
-    setSavingCron(def.id);
-    clearRowError(def.id);
-    try {
-      const r = await fetch(`/api/internal/admin/scheduler/definitions/${def.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cron_expression: editingCron.value }),
-      });
-      const json = await r.json();
-      if (!r.ok) throw new Error(json?.error?.message ?? `HTTP ${r.status}`);
-      setEditingCron(null);
-      setToast({ message: `Schedule updated for ${def.name}`, type: 'success' }); // DN1
-      load();
-    } catch (err) {
-      setRowError((prev) => ({ ...prev, [def.id]: err instanceof Error ? err.message : String(err) }));
-    } finally {
-      setSavingCron(null);
-    }
-  };
-
   const handleSaveNextRun = async (def: ScheduleDefinition) => {
     if (!editingNextRun || editingNextRun.id !== def.id) return;
     // P6: validate datetime before calling toISOString
@@ -271,9 +282,7 @@ export default function SchedulerStatusCard() {
               {definitions.map((def) => {
                 const isTriggeringThis = triggering === def.id;
                 const isTogglingThis = toggling === def.id;
-                const isSavingCronThis = savingCron === def.id;
                 const isSavingNextRunThis = savingNextRun === def.id;
-                const isEditingCronThis = editingCron?.id === def.id;
                 const isEditingNextRunThis = editingNextRun?.id === def.id;
                 const err = rowError[def.id];
 
@@ -288,40 +297,11 @@ export default function SchedulerStatusCard() {
                         <span className="font-mono text-xs text-gray-400">{def.job_key}</span>
                       </td>
 
-                      {/* Schedule (cron) — editable inline */}
+                      {/* Schedule (read-only, human-readable) */}
                       <td className="px-3 py-3">
-                        {isEditingCronThis ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="text"
-                              value={editingCron.value}
-                              onChange={(e) => setEditingCron({ id: def.id, value: e.target.value })}
-                              className="w-32 rounded border border-gray-300 px-2 py-0.5 font-mono text-xs focus:border-cbl-blue focus:outline-none"
-                              placeholder="0 2 * * *"
-                            />
-                            <button
-                              onClick={() => handleSaveCron(def)}
-                              disabled={isSavingCronThis}
-                              className="rounded bg-cbl-blue px-2 py-0.5 text-xs font-medium text-white hover:bg-cbl-blue/80 disabled:opacity-50"
-                            >
-                              {isSavingCronThis ? "…" : "Save"}
-                            </button>
-                            <button
-                              onClick={() => setEditingCron(null)}
-                              className="text-xs text-gray-400 hover:text-gray-600"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setEditingCron({ id: def.id, value: def.cron_expression })}
-                            title="Click to edit cron schedule"
-                            className="font-mono text-xs text-gray-600 underline-offset-2 hover:text-cbl-blue hover:underline"
-                          >
-                            {def.cron_expression}
-                          </button>
-                        )}
+                        <span className="text-xs text-gray-700" title={def.cron_expression}>
+                          {cronToHuman(def.cron_expression)}
+                        </span>
                       </td>
 
                       {/* Last run status */}

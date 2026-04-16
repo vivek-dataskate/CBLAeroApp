@@ -1120,49 +1120,49 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
   // DN5: All jobs carry policyFamily/policyKey so cadences are versioned and auditable
   scheduler.register(new CeipalIngestionJob(), {
     jobKey: 'ceipal-sync',
-    scheduleName: 'Ceipal ATS sync',
+    scheduleName: 'CEIPAL ATS Candidate Sync',
     cronExpression: '0 2 * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'ceipal_sync',
   });
   scheduler.register(new EmailIngestionJob(), {
     jobKey: 'email-sync',
-    scheduleName: 'Email inbox sync',
+    scheduleName: 'Email Inbox Resume Ingestion',
     cronExpression: '*/15 * * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'email_sync',
   });
   scheduler.register(new OneDriveResumePollerJob(), {
     jobKey: 'onedrive-sync',
-    scheduleName: 'OneDrive resume sync',
+    scheduleName: 'OneDrive Resume Sync',
     cronExpression: '0 * * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'onedrive_sync',
   });
   scheduler.register(new SavedSearchDigestJob(), {
     jobKey: 'saved-search-digest',
-    scheduleName: 'Saved search digest',
+    scheduleName: 'Saved Search Digest',
     cronExpression: '0 6 * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'saved_search_digest',
   });
   scheduler.register(new DedupWorkerJob(), {
     jobKey: 'dedup',
-    scheduleName: 'Dedup worker',
+    scheduleName: 'Duplicate Candidate Detection',
     cronExpression: '*/15 * * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'dedup',
   });
   scheduler.register(new RoleDeductionEnrichmentJob(), {
     jobKey: 'role-enrichment',
-    scheduleName: 'Role deduction enrichment',
+    scheduleName: 'Role & Title Enrichment',
     cronExpression: '0 3 * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'role_enrichment',
   });
   scheduler.register(new CandidateAvailabilityRefreshJob(), {
     jobKey: 'availability-refresh',
-    scheduleName: 'Candidate availability refresh',
+    scheduleName: 'Candidate Availability Refresh',
     cronExpression: '0 */4 * * *',
     policyFamily: 'refresh_cadences',
     policyKey: 'candidate_availability',
