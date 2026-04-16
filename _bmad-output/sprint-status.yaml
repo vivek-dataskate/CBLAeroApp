@@ -81,7 +81,7 @@ development_status:
   2-5a-implement-deduced-role-classification: done  # 2026-04-08: role taxonomy, heuristic+LLM deduction, UI, enrichment job — adversarial review (Sonnet) passed, 22 findings fixed
   2-6-implement-availability-state-and-manual-refresh-operations: done  # 2026-04-09: code review passed (Sonnet), 342 tests, Task 8.3 deferred
   2-7-implement-global-scheduler-control-plane: done  # 2026-04-14: 2x adversarial code review (Sonnet), 22 findings fixed (7 DN + 15 patch), 6 deferred. outbox consumer, FOR UPDATE SKIP LOCKED, policy versioning, readiness probe implemented.
-  2-7a-scheduler-admin-dashboard: done  # 2026-04-15: implemented — admin UI for scheduler management (view, trigger, pause, change cron, set next_run_at). 3 API routes + SchedulerStatusCard + auth actions. PR #72 merged.
+  2-7a-scheduler-admin-dashboard: done  # 2026-04-15: implemented — admin UI for scheduler management (view, trigger, pause, set next_run_at). 3 API routes + SchedulerStatusCard + auth actions. PR #72 merged. 2026-04-16: schedule column now human-readable (cronToHuman), job names polished, inline cron editing removed (code-defined only), admin sections use CollapsibleCard. Render cron job CBLAero-Scheduler-Tick created (*/10 * * * *).
   2-8-implement-clay-webhook-ingestion: done  # 2026-04-16: merged via PRs #80 (c7085b3 feat) + #81 (02b45a1 hourly-bucket fix). Push pattern (Clay HTTP API column → /api/webhooks/clay), real payload shape (enrichlinkedin_data nested blob + lowercase email/phone sidecars), default assignee vivek@cblsolutions.com, 55 tests passing. Retroactive story file written 2026-04-16.
   epic-2-retrospective: done  # 2026-04-16: full retro with 3 action items, 3 debt items, 1 team agreement. Saved to epic-2-retro-2026-04-16.md
 
