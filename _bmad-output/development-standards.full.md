@@ -1020,3 +1020,55 @@ CREATE TABLE audit_example (
 -- NO UPDATE/DELETE grants for app role
 GRANT INSERT, SELECT ON audit_example TO authenticated;
 ```
+
+## 29. Funnel Event Emission — Mandatory for All Candidate-Workflow Code
+
+### North-star KPI instrumentation is non-negotiable
+
+Per the PRD north-star KPI (Beat LinkedIn RPS Recruiter Funnel) and the architecture Funnel Telemetry section, every candidate-workflow code path must emit canonical funnel events. Pull requests that modify outreach, response handling, submission, or closure flows MUST emit the relevant funnel event or be rejected in code review.
+
+### Required events and emission points
+
+| Event | Emit when | Required by epic |
+|---|---|---|
+| `outreach_sent` | External provider confirms acceptance (SMS/email/Teams/voice) | Epic 3 |
+| `response_received` | Inbound webhook processed and persisted | Epic 3, 9 |
+| `submitted_to_client` | Recruiter action transitions candidate to submitted state | Epic 4 |
+| `closed_won` | Offer accepted / placement confirmed | Epic 4 |
+| `closed_lost` | Candidate rejected, withdrew, or lost | Epic 4 |
+
+### Rules
+
+- **Synchronous with state change:** Emit in the same transaction as the underlying record write. Do not defer to a background job.
+- **Idempotent:** Use `idempotency_key = {event_type}:{recruiter_id}:{candidate_id}:{client_id}` as a unique constraint; duplicate emissions are silent no-ops.
+- **Attribution required:** Populate `source_epic` (e.g. `epic-3`) and `source_story` (e.g. `3.1`) so dashboard lift can be attributed to the feature that shipped.
+- **No feature-flag hiding:** Code behind a flag that DOES execute must still emit funnel events (so A/B results are measurable).
+- **Schema:** Use the shared `funnel_events` writer from `features/metrics/funnel/`; never hand-roll an INSERT.
+
+### Code pattern
+
+```typescript
+import { emitFunnelEvent } from '@/features/metrics/funnel'
+
+await db.transaction(async (tx) => {
+  await tx.outreach.insert({ /* ... */ })
+  await emitFunnelEvent(tx, {
+    event_type: 'outreach_sent',
+    tenant_id, recruiter_id, client_id, candidate_id,
+    channel: 'sms',
+    source_epic: 'epic-3',
+    source_story: '3.1',
+    occurred_at: new Date(),
+    attributes: { template_id, correlation_id },
+  })
+})
+```
+
+### Pre-merge checklist (enforced via code review)
+
+- [ ] Does this PR touch any candidate-workflow state transition?
+- [ ] If yes, is the correct funnel event emitted in the same transaction?
+- [ ] Are `source_epic` and `source_story` populated correctly?
+- [ ] Is the idempotency key formed per the standard pattern?
+- [ ] Does the PR description reference which funnel stage it moves (per story template Funnel Lever & Measurement section)?
+

@@ -58,6 +58,7 @@ _This document captures collaborative architecture decisions for CBLAero and is 
 - Queueing/idempotency for outreach and notification flows
 - Explainability of scoring and rejection rationale to preserve recruiter trust
 - Cost guardrails and per-tenant metering readiness
+- **Funnel telemetry emission (north-star KPI):** Every candidate-workflow module must emit canonical funnel events so per-recruiter and admin-consolidated dashboards can measure live performance against the LinkedIn RPS baseline defined in the PRD. Non-negotiable requirement — see "Funnel Telemetry Architecture" section below and Epic 10.
 
 ## Technology Stack
 
@@ -160,6 +161,60 @@ Every request receives a `x-trace-id` (UUID) in `proxy.ts` middleware. This ID m
   - Policy-driven lifecycle with legal hold support
   - GDPR erase workflow as first-class background process
   - Voice call recordings and transcripts retained in Supabase for 3 years
+
+### Funnel Telemetry Architecture (North-Star KPI Instrumentation)
+
+**Mandate:** Every candidate-workflow module must emit canonical funnel events so per-recruiter and admin-consolidated dashboards (Epic 10) can measure live performance against the LinkedIn RPS baseline defined in the PRD (100 InMails → 28 responses → 14 submissions → 0.5 closures @ $200/mo). This is a cross-cutting, non-negotiable requirement — no feature shipping under Epics 3, 4, 5, 6, or 9 may merge without emitting the relevant funnel events.
+
+**Canonical funnel event schema (stored in `cblaero_app.funnel_events`):**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `event_id` | uuid | yes | PK; server-generated |
+| `event_type` | enum | yes | `outreach_sent`, `response_received`, `submitted_to_client`, `closed_won`, `closed_lost` |
+| `tenant_id` | uuid | yes | Tenant isolation; indexed |
+| `recruiter_id` | uuid | yes | Actor attribution |
+| `client_id` | uuid | yes | Client the work is for |
+| `candidate_id` | uuid | yes | Candidate this event relates to |
+| `channel` | enum | yes | `inmail`, `sms`, `email`, `voice`, `teams`, `portal`, `ats`, `other` |
+| `source_epic` | text | yes | e.g., `epic-3`, `epic-4` — enables feature-level lift attribution |
+| `source_story` | text | yes | e.g., `3.1`, `4.3` — enables story-level lift attribution |
+| `occurred_at` | timestamptz | yes | When the event actually happened |
+| `recorded_at` | timestamptz | yes | When the event was persisted (server clock) |
+| `idempotency_key` | text | yes | `{event_type}:{recruiter_id}:{candidate_id}:{client_id}` — prevents duplicate emission on retry |
+| `attributes` | jsonb | no | Event-specific payload (e.g., InMail template id, response sentiment, submission doc id, close amount) |
+
+**Emission contract:**
+
+1. **Emit at the authoritative boundary.** Outreach modules emit `outreach_sent` when the provider (SMS/email/Teams/voice) confirms acceptance. Response modules emit `response_received` when the inbound webhook is processed. Submission/closure modules emit on the recruiter action that authoritatively transitions state.
+2. **Idempotency is required.** Use `idempotency_key` as a unique constraint; conflict = silent no-op. Workers must tolerate at-least-once delivery.
+3. **Emission is synchronous with the state change.** Funnel events are part of the transaction that creates the underlying record (outreach log, response record, submission record) — never a background-only enrichment.
+4. **Backfill is allowed** only through a dedicated admin tool with audit trail; `recorded_at` will show actual backfill time, `occurred_at` preserves the original event time.
+5. **No feature-flag-hiding funnel emission.** A feature behind a flag may be inactive, but if it does run, it must emit funnel events. This ensures A/B results are measurable.
+
+**Query surface:**
+
+- `funnel_events` table is the source of truth for Epic 10 dashboards.
+- Pre-aggregated materialized views (`funnel_daily_by_recruiter`, `funnel_daily_by_tenant`) refresh every 5 minutes for dashboard queries; trailing-30-day / trailing-90-day views refresh hourly.
+- Year-over-year comparisons are supported by ≥24-month retention (longer than audit minimum because baseline comparisons need historical context).
+
+**LinkedIn RPS baseline configuration:**
+
+- Stored in `cblaero_app.funnel_baseline_config` with versioning (`effective_from`, `effective_to`).
+- Current baseline: outreach=100, response_rate=0.28, submission_rate_of_responses=0.50, closure_rate_of_responses=0.036, cost_per_recruiter_usd=200.
+- Admin UI edits create a new version; historical comparisons use the baseline effective at the time of the events being compared.
+
+**Relationship to existing observability:**
+
+- Funnel events are **business events**, not operational logs — distinct from the observability/tracing described above.
+- Correlation IDs from the operational trace are carried into `attributes.correlation_id` for cross-referencing during incident response.
+- Funnel events are exempt from PII minimization in logs because `candidate_id` is a tenant-scoped UUID, not direct PII. Direct PII (name, email) stays in the candidate profile table.
+
+**Data residency and tenant isolation:**
+
+- `funnel_events`, `funnel_baseline_config`, and all pre-aggregated materialized views are subject to the same USA-only data residency policy as all other tenant data (FR70). Tables must live in the approved US Supabase regions (us-east-1, us-west-2) and must not be replicated outside approved regions for any analytics or BI tooling.
+- Tenant isolation is enforced via RLS on `tenant_id`; the query API and dashboard queries must scope every read by the caller's tenant.
+- `recruiter_id` cross-tenant aggregation is forbidden. Admin consolidated dashboards aggregate within a single tenant only; platform-level rollups across tenants (for CBL internal use) must use a separate, tenant-agnostic pipeline and are out of scope for Epic 10.
 
 ### Candidate Data Ingestion Architecture
 
