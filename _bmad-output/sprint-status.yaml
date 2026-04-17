@@ -5,7 +5,7 @@
 # story_location: docs/implementation_artifacts/stories
 
 generated: 2026-03-11
-last_updated: 2026-04-17  # Story 1-12a Tasks 2-5 bundled in PR B → review
+last_updated: 2026-04-17  # Story 1-12a DONE (PR A #97 + PR B #99 merged; review findings patched)
 project: CBLAero
 project_key: NOKEY
 tracking_system: file-system
@@ -68,7 +68,7 @@ development_status:
   1-10-implement-shared-api-auth-middleware: done  # depends on 1.8
   1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
   1-12-edge-system-provider-framework: done  # 2026-04-16: framework complete + 2 code reviews, 110 tests passing
-  1-12a-migrate-clay-ceipal: review  # 2026-04-17: PR A (Task 1) in review; PR B (Tasks 2-5 — Clay outbound + Ceipal migration + registry seed + audit) in review
+  1-12a-migrate-clay-ceipal: done  # 2026-04-17: PR A #97 (Task 1) + PR B #99 (Tasks 2-5) merged to master; Opus 4-layer review applied inline (F1 route init, F2 token invalidate on 401, F7 expires_in ≤ 0 force-refresh, F8 malformed page warn, F10 maxPages guard, F11 ProviderLogEntry JSON sink, F13 audit assertion)
   1-12b-migrate-graph-anthropic: backlog  # depends on 1.12a
   1-12c-migrate-supabase: backlog  # depends on 1.12b
   epic-1-retrospective: done
