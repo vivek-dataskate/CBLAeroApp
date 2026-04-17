@@ -71,6 +71,44 @@ First consumers of the provider framework (Story 1.12). Clay and Ceipal are chos
 **And** `PostgresHealthEventStore.persist()` is wired to `ProviderRegistry.onHealthEvent` so every mode transition writes an audit row
 **And** both providers show `mode='normal'`, `health='healthy'` in `ProviderRegistry.list()` after first successful call
 
+### AC 6: Logging & Audit Guardrails — Explicit Contract
+
+**Given** the provider framework adds structured `ProviderLogEntry` and `WebhookLogEntry` emissions AND persists health transitions to `provider_health_events`
+**When** Clay + Ceipal are migrated onto it
+**Then** logging and audit behavior satisfies ALL of the following — these are first-class acceptance checks, not sidebar notes:
+
+**PRESERVE (existing behavior — tests and operators depend on it):**
+1. `[Clay Webhook]` and `[Ceipal]` console prefixes stay on every existing log call site — new structured JSON logs are ADDITIVE, not replacement. Tests in `route.test.ts` and `ceipal.test.ts` that assert prefixes must still pass.
+2. `CLAY_WEBHOOK_DEBUG=true` (default) still dumps the first 4000 chars of raw Clay payload — retained for mapper-drift visibility per story 2-8 rollout decision.
+3. `sync_errors.run_id` FK always populates when a `runId` is in scope — `recordSyncFailure('clay_enrichment', recordId, err, bucketRunId)` signature unchanged. 2-4b admin drill-down breaks if this regresses.
+4. `sync_runs` semantics unchanged: Clay = hourly bucket via `upsert_clay_hourly_sync_run`; Ceipal = per-run via `createSyncRun('ceipal')` → `completeSyncRun(runId, counts)` / `failSyncRun(runId, err)`.
+5. `[Ceipal]` token-acquisition success log (`expires in ${expiresIn}s`) preserved — operator runbook uses it to verify credential validity after deploys.
+
+**ADD (new behavior from the provider framework):**
+6. Every outbound Ceipal call emits exactly ONE `ProviderLogEntry` JSON line with: `{provider:'ceipal', method, path, statusCode, durationMs, attempt}` — fields populated even on failure. `errorClassification` field populated on failure (`transient` / `rate_limited` / `permanent` / `auth_failure`).
+7. Every inbound Clay event emits exactly ONE `WebhookLogEntry` per event row with: `{source:'clay_enrichment', eventType, payloadSize, signatureValid, duplicate, outcome, processingTimeMs}`. `outcome` takes one of: `accepted` / `rejected_auth` / `rejected_replay` / `rejected_size` / `rejected_parse` / `rejected_rate_limit` / `duplicate_skipped`.
+8. Every `ProviderRegistry` mode transition (normal ↔ degraded ↔ kill_switched) writes a row to `provider_health_events` via `PostgresHealthEventStore.persist()`. Wire `registry.onHealthEvent` at startup. Persist failures emit `console.error('[health-event-store] persist failed', ...)` but never throw (observability must not block ingestion).
+9. Every successfully-processed Clay event writes `webhook_events.result_meta = { syncRunId, candidateId, outcome: 'inserted' | 'updated' | 'skipped_duplicate' | 'skipped_no_identity' }` — per-event traceability into admin dashboard + future replay.
+10. Dead-letter path populates `webhook_events.error_message` + `status='dead_letter'` after 3 failed processor retries. Every dead-letter event is a structured log line at `console.error` level so external log aggregators can alert.
+
+**NEVER LOG (security):**
+11. Ceipal auth response body — may echo credentials. Keep the sanitized `[Ceipal] Auth failed (${status}) — check Ceipal admin panel` pattern from `ceipal.ts:62-63`. Never log raw text/JSON of auth failures.
+12. Clay payload content outside the debug flag — PII. Only the 4000-char truncated debug dump is allowed, and only when `CLAY_WEBHOOK_DEBUG=true`.
+13. Full candidate objects in any log line — log the candidate ID or email hash, never the full record.
+14. Bearer tokens, API keys, or signatures — redact in `applyAuth` logs if any.
+
+**INTEGRATION TEST GATE (new test, enforces the contract):**
+15. Add `src/modules/__tests__/providers-audit-integration.test.ts` — fire one known Clay payload (2 rows, 1 duplicate) through the full stack. Assert:
+    - 2 rows in `webhook_events` with correct `source`, `status='completed'`, `result_meta` populated
+    - 1 row in `sync_runs` (hourly bucket) with `source='clay_enrichment'`, `succeeded=1`, `skipped=1` (duplicate)
+    - 0 rows in `sync_errors` (no failures in this scenario)
+    - 1 candidate upserted with `source_recruiter_actor_id` stamped
+    - 1 row in `content_fingerprints` with `source='ats'`
+    - 0 rows in `provider_health_events` (no transitions on happy path)
+    - Exactly 2 `WebhookLogEntry` JSON lines emitted, 0 `ProviderLogEntry` lines (inbound-only)
+    - `[Clay Webhook]` prefix still appears on the legacy console logs
+16. Add `src/modules/__tests__/providers-ceipal-audit.test.ts` — fire one Ceipal page fetch, assert exactly one `ProviderLogEntry` JSON line with `provider='ceipal'`, one `createSyncRun('ceipal')` → `completeSyncRun(runId, counts)` cycle, `[Ceipal]` token log present.
+
 ### AC 5: Zero Regressions on Prior Stories (2-8, 2-4b, 2-3)
 
 **Given** Clay webhook delivery (Story 2-8), admin sync-run UI (Story 2-4b), and Ceipal ingestion (Story 2-3) are already live
@@ -165,6 +203,7 @@ First consumers of the provider framework (Story 1.12). Clay and Ceipal are chos
   - [ ] 5.9 Story 2-3 smoke: trigger `CeipalIngestionJob` via `POST /api/internal/jobs/run` → assert structured `{provider:'ceipal',…}` logs + one new per-run `sync_runs` row with `source='ceipal'` + `CeipalIngestionJob.lastRunAt` advanced for next invocation
   - [ ] 5.10 Provider registry smoke: `ProviderRegistry.list()` shows `clay`, `clay-outbound`, `ceipal` all with `mode='normal'`, `health='healthy'` after the smoke calls above
   - [ ] 5.11 Double-submit the same Clay payload → assert second submission is deduped at `content_fingerprints` (row count unchanged), assert `webhook_events` has 2 rows (HTTP-level dedup is off for Clay since `provider_event_id=null`), assert hourly bucket counter still increments accepted+skipped correctly
+  - [ ] 5.12 Run new audit integration tests (AC 6, items 15 + 16): `npx vitest run src/modules/__tests__/providers-audit-integration.test.ts src/modules/__tests__/providers-ceipal-audit.test.ts` — both must pass, validates the full logging + audit contract end-to-end
 
 ## Dev Notes
 
