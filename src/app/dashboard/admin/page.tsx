@@ -120,6 +120,8 @@ export default async function AdminDashboardPage({
           <span className="text-gray-300">|</span>
           <Link href="/dashboard/admin/dedup" className="text-sm font-medium text-cbl-navy hover:text-cbl-blue">Dedup Review</Link>
           <span className="text-gray-300">|</span>
+          <Link href="/dashboard/admin/sms-templates" className="text-sm font-medium text-cbl-navy hover:text-cbl-blue">SMS Templates</Link>
+          <span className="text-gray-300">|</span>
           <AuditLink count={auditCount} adminActions={adminActions} stepUpAttempts={stepUpAttempts} />
           <span className="flex-1" />
         </div>

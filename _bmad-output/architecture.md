@@ -1651,6 +1651,122 @@ Processing order on inbound opt-out:
 - If a requirement is broad in product language and no policy value exists yet, engineering is not allowed to guess. The work item is blocked until a policy entry or product decision is created.
 - This converts remaining PRD long-tail ambiguity into explicit configuration debt rather than hidden implementation leakage.
 
+### 25. Edge System Provider Framework — Vendor-Agnostic Access Layer
+
+**Decision:** Every external system (database, LLM, messaging, ATS, enrichment) is accessed through a vendor-agnostic provider framework. Product code never imports vendor SDKs directly. Changing a vendor requires implementing a new provider class — zero changes to business logic, routes, jobs, or UI.
+
+**Provider access architecture (4 layers, bidirectional):**
+
+```
+                        ┌─────────────────┐
+                        │  PRODUCT CODE   │
+                        │  routes / jobs  │
+                        │  Never imports  │
+                        │  vendor SDKs    │
+                        └────┬───────┬────┘
+                  outbound   │       │   inbound
+                     ┌───────┘       └────────┐
+         ┌───────────▼──────────┐  ┌──────────▼───────────┐
+         │  PROVIDER INTERFACE  │  │  WEBHOOK INTERFACE   │
+         │  SMSProvider.send()  │  │  WebhookReceiver     │
+         │  LLMProvider.call()  │  │    .validate()       │
+         │  One per capability  │  │    .parse()          │
+         └───────────┬──────────┘  │    .process()        │
+                     │             │  One per source       │
+         ┌───────────▼──────────┐  └──────────┬───────────┘
+         │ PROVIDER IMPL        │             │
+         │ TelnyxSMSProvider    │  ┌──────────▼───────────┐
+         │ AnthropicLLMProvider │  │ WEBHOOK IMPL          │
+         │ extends BaseClient   │  │ ClayWebhookReceiver   │
+         └───────────┬──────────┘  │ TelnyxWebhookReceiver │
+                     │             │ extends BaseReceiver   │
+         ┌───────────▼─────────────┴──────────────────────┐
+         │  BASE INFRASTRUCTURE (shared)                   │
+         │                                                 │
+         │  BaseProviderClient        BaseWebhookReceiver  │
+         │  ├ Auth injection          ├ Signature validate │
+         │  ├ Timeout                 ├ Payload validate   │
+         │  ├ Retry + backoff         ├ Size limit         │
+         │  ├ Structured logging      ├ Replay protection  │
+         │  ├ Error classification    ├ Idempotency (dedup)│
+         │  ├ Cost tracking           ├ Rate limiting      │
+         │  └ Health reporting        ├ Dead letter queue  │
+         │                            ├ Structured logging │
+         │  ProviderRegistry          └ Health reporting   │
+         │  ├ Health per provider                          │
+         │  ├ Kill switch                                  │
+         │  ├ Routing policies        webhook_events table │
+         │  └ Admin dashboard         ├ Raw event storage  │
+         │                            ├ Processing status  │
+         │                            └ Retry drain loop   │
+         └─────────────────────────────────────────────────┘
+```
+
+**OUTBOUND (system → external provider):**
+
+`BaseProviderClient` handles all outbound HTTP concerns:
+- Auth injection (bearer token, API key, OAuth refresh)
+- Timeout (configurable, default 10s)
+- Retry with exponential backoff (429/5xx → 1s, 2s, 4s, max 3 retries)
+- Structured logging: every call emits `{provider, method, path, status, durationMs, attempt}`
+- Error classification: transient (retry) / rate_limited (backoff) / permanent (fail) / auth_failure (alert)
+- Cost tracking: optional `estimateCost()` hook per provider
+- Health reporting: feeds rolling error rate + p95 latency to ProviderRegistry
+
+**INBOUND (external provider → system webhooks):**
+
+`BaseWebhookReceiver` handles all inbound webhook concerns:
+- **Signature validation**: provider-specific strategy (HMAC, bearer token, IP allowlist). Reject invalid signatures with 401 before any processing. Configurable per provider via `WebhookAuthStrategy`.
+- **Payload validation**: JSON parse with size limit (configurable, default 256KB). Reject malformed with 400. Schema validation optional per provider.
+- **Replay protection**: reject webhooks with timestamp older than configurable window (default 5 minutes). Prevents replay attacks with captured payloads.
+- **Idempotency / dedup**: extract provider event ID from payload, check `webhook_events` for duplicates. Skip if already processed. Prevents double-processing on provider retries.
+- **Rate limiting**: per-source inbound rate limit (configurable, default 100/minute). Excess events get 429 response — provider retries later. Prevents burst floods (e.g., Clay backfill firing 9,000 rows).
+- **Structured logging**: every inbound event emits `{source, eventType, payloadSize, signatureValid, duplicate, processingTimeMs, outcome}`.
+- **Raw event storage**: validated events are written to shared `webhook_events` table with `source`, `event_type`, `raw_payload`, `processed` flag. This is the thin receiver pattern (target < 100ms response time).
+- **Dead letter queue**: events that fail processing are marked `failed` with `error_message` in `webhook_events`. A separate retry drain processes failed events with backoff. Events that fail 3 times are moved to `dead_letter` status for manual investigation.
+- **Health monitoring**: track per-source inbound event rate, processing lag (time from `created_at` to `processed_at`), error rate. Surface in ProviderRegistry alongside outbound health.
+- **Audit trail**: every inbound event feeds the append-only audit log. For compliance-relevant events (opt-out, consent changes), processing is synchronous before returning 200 to the provider.
+
+**Vendor-swap procedure (example: Telnyx → Twilio for SMS):**
+
+1. Create `TwilioSMSProvider implements SMSProvider` extending `BaseProviderClient` (~50 lines)
+2. Add `TWILIO_*` env vars
+3. Update factory: `getSMSProvider()` returns Twilio when env vars set
+4. Update `provider_routing_policies`: set `primary_provider = 'twilio'`
+5. Deploy — zero changes to templates, scheduling, consent, audit, API routes, UI
+
+**Vendor-swap procedure (example: Anthropic → OpenAI for LLM):**
+
+1. Create `OpenAILLMProvider implements LLMProvider` extending `BaseProviderClient`
+2. Add `OPENAI_*` env vars
+3. Update factory: `getLLMProvider()` returns OpenAI when env vars set
+4. All `callLlm()` callers (resume extraction, role deduction, scoring) unchanged
+
+**Rules:**
+
+- **No vendor SDK in product code.** Only `modules/providers/` and `modules/{domain}/` files may import vendor packages. Routes, jobs, and UI never see `@anthropic-ai/sdk`, `telnyx`, `@supabase/supabase-js`, etc.
+- **One interface per capability.** `SMSProvider` not `TelnyxProvider`. The interface describes what the system needs, not who provides it.
+- **Factory function per capability.** `getSMSProvider()`, `getLLMProvider()`, `getEmailCampaignProvider()`. Factory reads env vars to decide which implementation. Returns stub when no credentials configured.
+- **BaseProviderClient for all HTTP providers.** Auth, retry, timeout, logging, health — inherited, not reimplemented.
+- **ProviderRegistry tracks all providers.** Health status, error rate, kill switch — visible in admin dashboard. Automatic kill switch at >= 80% failure rate with >= 50 attempts in 5 minutes.
+- **Webhook receivers share infrastructure.** `webhook_events` table + thin receiver pattern. Provider-specific processing is a pluggable handler, not a custom endpoint.
+
+**Provider inventory and access pattern:**
+
+| Capability | Interface | Implementations | Factory |
+|---|---|---|---|
+| Database | `SupabaseClient` (SDK-managed) | Supabase JS SDK | `getSupabaseAdminClient()` |
+| LLM / AI | `LLMProvider` | `AnthropicLLMProvider`, future OpenAI | `getLLMProvider()` via `callLlm()` |
+| SMS (two-way) | `SMSProvider` | `TelnyxSMSProvider`, `TwilioSMSProvider` (standby), `StubSMSProvider` | `getSMSProvider()` |
+| Campaign email | `EmailCampaignProvider` | `InstantlyEmailProvider`, `StubEmailProvider` | `getEmailCampaignProvider()` |
+| Ad hoc email | `GraphEmailClient` | Microsoft Graph | `getGraphClient()` |
+| ATS sync | `ATSProvider` | `CeipalATSProvider` | `getATSProvider()` |
+| Enrichment | `EnrichmentProvider` | `ClayProvider` (bidirectional) | `getEnrichmentProvider()` |
+| Teams | `TeamsProvider` | `MSTeamsProvider` | `getTeamsProvider()` |
+| Identity | `IdentityProvider` | Microsoft Entra (SSO) | `getIdentityProvider()` |
+
+**Database special case:** Supabase JS SDK manages its own connection pool, retry, and timeout. We do NOT wrap individual queries in `BaseProviderClient`. Instead, `SupabaseHealthProvider` wraps the client with health monitoring only (connection ping, error rate). The kill switch for Supabase = application-level circuit breaker (fail fast when DB unreachable).
+
 ## Service Boundary Architecture
 
 _Decision: The application follows a layered service architecture with clear boundaries. Routes delegate to services, services delegate to repositories. No layer may skip a level._
