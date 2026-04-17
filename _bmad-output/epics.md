@@ -306,6 +306,10 @@ Enable candidates to securely self-serve profile, status, and document workflows
 - Story 1.5: S
 - Story 1.6: S
 - Story 1.7: S
+- Story 1.12: M
+- Story 1.12a: M
+- Story 1.12b: M
+- Story 1.12c: S
 - Story 2.1: M
 - Story 2.2: M
 - Story 2.2a: M
@@ -316,8 +320,11 @@ Enable candidates to securely self-serve profile, status, and document workflows
 - Story 2.5: M
 - Story 2.6: S
 - Story 2.7: M
-- Story 3.1: S
+- Story 3.1: M
+- Story 3.1a: M
+- Story 3.1b: M
 - Story 3.2: S
+- Story 3.2a: M
 - Story 3.3: M
 - Story 3.4: M
 - Story 3.5: S
@@ -565,6 +572,76 @@ So that session-validation, RBAC, step-up, and audit enforcement is defined once
 **When** it needs auth enforcement
 **Then** it uses `withAuth(handler, options)` wrapper
 **And** all existing route behavior and tests are preserved
+
+### Story 1.12: Edge System Provider Framework
+
+As a platform engineer,
+I want a reusable provider framework that standardizes how every external system is authenticated, called, retried, health-tracked, and kill-switched — for both outbound API calls and inbound webhooks,
+So that every integration follows the same patterns and new providers can be wired in without reinventing the wheel.
+
+**Acceptance Criteria:**
+
+**Given** the framework is built as a new `src/modules/providers/` module
+**When** it is available for providers to extend
+**Then** `BaseProviderClient` provides: auth injection, timeout, retry with backoff, structured logging, error classification, cost tracking, health reporting
+**And** `BaseWebhookReceiver` provides: signature validation, payload size limit, replay protection, idempotency/dedup, rate limiting, raw event storage, dead letter queue
+**And** `ProviderRegistry` tracks per-provider health (rolling error rate, p95 latency) with automatic kill switch at >= 80% failure rate
+**And** `provider_routing_policies` and `provider_health_events` tables persist routing config and health transitions
+**And** `webhook_events` table stores raw inbound events with dedup and processing status
+**And** no existing code is modified — framework is purely additive, validated with mock providers in tests
+
+### Story 1.12a: Migrate Clay + Ceipal to Provider Framework
+
+As a platform engineer,
+I want to migrate Clay (inbound webhook + outbound API) and Ceipal ATS (outbound polling) onto the provider framework,
+So that these lowest-risk integrations validate the framework before applying it to critical paths.
+
+**Acceptance Criteria:**
+
+**Given** the provider framework from Story 1.12 exists
+**When** Clay and Ceipal are migrated
+**Then** Clay webhook uses `BaseWebhookReceiver` with `BearerTokenWebhookAuth` for signature validation
+**And** Clay payloads are written to shared `webhook_events` table with dedup on `profile_id:last_refresh`
+**And** `ClayProviderClient` is created for outbound Clay API (ready for Epic 3 candidate push use case)
+**And** Ceipal uses `CeipalProviderClient` extending `BaseProviderClient` with API key auth, retry, structured logging
+**And** both are registered in `ProviderRegistry` with health tracking
+**And** all existing tests pass with zero behavior change — migration is a refactor, not a feature change
+
+### Story 1.12b: Migrate Microsoft Graph + Anthropic to Provider Framework
+
+As a platform engineer,
+I want to migrate Microsoft Graph (email/inbox) and Anthropic (LLM inference) onto the provider framework,
+So that critical integrations gain standardized health tracking and the LLM layer becomes vendor-swap ready.
+
+**Acceptance Criteria:**
+
+**Given** the framework is validated on Clay + Ceipal (Story 1.12a)
+**When** Graph and Anthropic are migrated
+**Then** Graph uses `GraphProviderClient` with `OAuthTokenAuth` (automatic refresh on 401)
+**And** Graph email operations gain retry on 5xx/429 and structured logging they currently lack
+**And** `LLMProvider` interface is created: `call(model, systemPrompt, userContent, opts) → LLMResult | null`
+**And** `AnthropicLLMProvider implements LLMProvider` wraps the existing Anthropic SDK
+**And** `callLlm()` public API is UNCHANGED — same signature, same return type, same behavior
+**And** swapping Anthropic → OpenAI = new `OpenAILLMProvider` + env var — zero changes to callers
+**And** both are registered in `ProviderRegistry` with health tracking
+**And** all existing tests pass — callers of `callLlm()` see zero difference
+
+### Story 1.12c: Migrate Supabase to Provider Framework
+
+As a platform engineer,
+I want Supabase to be health-tracked and circuit-breakered through the provider framework,
+So that database health is visible alongside all other providers and the app fails fast instead of queuing against a dead database.
+
+**Acceptance Criteria:**
+
+**Given** the framework is validated on 4 providers (Story 1.12b)
+**When** Supabase is wrapped with health monitoring
+**Then** `SupabaseHealthProvider` runs periodic health pings (`SELECT 1` every 30s)
+**And** Supabase is registered in `ProviderRegistry` with health status
+**And** circuit breaker fires after 30s of consecutive ping failures — marks `unhealthy`, emits admin alert
+**And** auto-recovers when pings succeed (unlike messaging providers — DB doesn't need manual failback)
+**And** `getSupabaseAdminClient()` is UNCHANGED — individual queries are NOT wrapped in BaseProviderClient
+**And** all existing tests pass — this is the lightest touch, highest stakes migration
 
 ## Epic 2: Candidate Data Ingestion and Profile Lifecycle
 
@@ -891,6 +968,39 @@ So that outreach is fast, personalized, and sent within candidate contact window
 **And** all outbound messages carry campaign and template version metadata
 **And** due sends are emitted by the global scheduler rather than feature-local timers
 
+### Story 3.1a: Recruiter AI Command Bar and Chat Assistant
+
+As a recruiter,
+I want a chat-style command bar embedded in my dashboard where I can type what I want in natural language,
+So that I never need to learn UI navigation — I describe my intent and the system shows the right screen, pre-fills actions, and guides me through workflows.
+
+**Acceptance Criteria:**
+
+**Given** a recruiter on any dashboard page
+**When** they open the command bar (floating button or Ctrl+K)
+**Then** a chat drawer opens with natural language intent parsing via Claude API
+**And** autocomplete suggests skills, locations, templates, popular searches, and recent queries
+**And** action cards display pre-filled results (search results, SMS send previews, stats) with confirm/cancel buttons
+**And** no send or destructive action executes without explicit user confirmation
+**And** RAG-powered context retrieval from candidate DB, template library, and recruiter history informs suggestions
+
+### Story 3.1b: Telnyx SMS Provider Integration
+
+As a platform engineer,
+I want to replace the stub SMS provider with a live Telnyx integration including authentication, delivery webhooks, rate limiting, and idempotent retries,
+So that SMS messages actually reach candidates and delivery/response events flow back into the system.
+
+**Acceptance Criteria:**
+
+**Given** Telnyx API credentials are configured
+**When** the SMS pipeline dispatches a send
+**Then** the message is sent via Telnyx API with bearer auth and idempotency key
+**And** delivery status webhooks update sms_sends rows (sent/delivered/failed/undeliverable)
+**And** inbound reply webhooks classify responses (opt_out/affirmative/negative/freeform)
+**And** STOP replies trigger immediate consent revocation before webhook returns 200
+**And** sends are rate-limited to configured MPS with exponential backoff on 429s
+**And** up to 3 retries with escalating delay, then terminal undeliverable status
+
 ### Story 3.2: Build Email Outreach Templates with Role Permissions
 
 As a recruiter lead,
@@ -903,6 +1013,23 @@ So that communication quality and compliance remain controlled.
 **When** they view or edit email templates
 **Then** permission checks enforce allowed actions
 **And** template revisions are versioned with author and timestamp
+
+### Story 3.2a: Instantly Email Campaign Provider Integration
+
+As a platform engineer,
+I want to integrate Instantly as the email campaign provider with authentication, sequence management, delivery/engagement webhooks, and rate limiting,
+So that email outreach templates (Story 3.2) actually deliver to candidates and open/click/reply/bounce events flow back into the system.
+
+**Acceptance Criteria:**
+
+**Given** Instantly API credentials are configured
+**When** the email pipeline dispatches a campaign batch
+**Then** it creates an Instantly campaign, uploads recipients to a sequence, and launches delivery
+**And** delivery webhooks (open/click/reply/bounce/unsubscribe) update email_sends rows
+**And** unsubscribe events trigger immediate consent revocation
+**And** SMS opt-out (from Telnyx) cancels pending Instantly sequences within 5 seconds
+**And** sends respect configured daily limits and Instantly warm-up schedule
+**And** when Instantly is kill-switched, ad hoc emails fall back to Microsoft Graph; campaigns pause
 
 ### Story 3.3: Implement Consent, Opt-Out, and Channel Preference Engine
 

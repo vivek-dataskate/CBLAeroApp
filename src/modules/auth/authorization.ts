@@ -21,7 +21,10 @@ export type ProtectedAction =
   | "admin:view-sync-errors"
   | "admin:view-scheduler"
   | "admin:manage-scheduler"
-  | "compliance:read-data-residency";
+  | "compliance:read-data-residency"
+  | "outreach:read"
+  | "outreach:write"
+  | "outreach:manage-templates";
 
 type AuthorizationAllow = {
   allowed: true;
@@ -41,6 +44,8 @@ const ROLE_ACTION_MAP: Record<SessionRole, ReadonlySet<ProtectedAction>> = {
     "candidate:read",
     "candidate:write",
     "recruiter:csv-upload",
+    "outreach:read",
+    "outreach:write",
   ]),
   "delivery-head": new Set([
     "dashboard:view",
@@ -49,6 +54,8 @@ const ROLE_ACTION_MAP: Record<SessionRole, ReadonlySet<ProtectedAction>> = {
     "recruiter:csv-upload",
     "admin:read-ai-usage",
     "admin:read-prompt-registry",
+    "outreach:read",
+    "outreach:write",
   ]),
   admin: new Set([
     "dashboard:view",
@@ -67,6 +74,9 @@ const ROLE_ACTION_MAP: Record<SessionRole, ReadonlySet<ProtectedAction>> = {
     "admin:view-scheduler",
     "admin:manage-scheduler",
     "compliance:read-data-residency",
+    "outreach:read",
+    "outreach:write",
+    "outreach:manage-templates",
   ]),
   "compliance-officer": new Set([
     "dashboard:view",

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, useCallback } from "react";
 import { isStaleSignal } from "@/features/candidate-management/application/availability-scoring";
+import SendSMSModal from "./SendSMSModal";
 
 type CandidateRow = {
   id: string;
@@ -113,6 +114,7 @@ export default function CandidatesPage() {
   const [showSavedPanel, setShowSavedPanel] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
+  const [showSmsModal, setShowSmsModal] = useState<false | "selected" | "all">(false);
 
   const hasActiveFilters = Object.values(filters).some((v) => v.length > 0);
 
@@ -481,9 +483,21 @@ export default function CandidatesPage() {
                   </span>
                   {sortLabel && <span className="text-xs text-gray-400">| Sorted by: {sortLabel}</span>}
                   {selectedIds.size > 0 && (
-                    <button type="button" onClick={handleBulkRefresh} disabled={bulkRefreshing}
-                      className="rounded-lg bg-cbl-navy px-3 py-1.5 text-xs font-medium text-white hover:bg-cbl-blue disabled:opacity-50">
-                      {bulkRefreshing ? "Refreshing..." : `Refresh Availability (${selectedIds.size})`}
+                    <>
+                      <button type="button" onClick={handleBulkRefresh} disabled={bulkRefreshing}
+                        className="rounded-lg bg-cbl-navy px-3 py-1.5 text-xs font-medium text-white hover:bg-cbl-blue disabled:opacity-50">
+                        {bulkRefreshing ? "Refreshing..." : `Refresh Availability (${selectedIds.size})`}
+                      </button>
+                      <button type="button" onClick={() => setShowSmsModal("selected")}
+                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700">
+                        Send SMS ({selectedIds.size})
+                      </button>
+                    </>
+                  )}
+                  {hasActiveFilters && totalLoaded > 0 && (
+                    <button type="button" onClick={() => setShowSmsModal("all")}
+                      className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">
+                      Send SMS to All ({totalLoaded})
                     </button>
                   )}
                 </div>
@@ -625,6 +639,36 @@ export default function CandidatesPage() {
           <p className="text-sm text-cbl-light/60">CBL Aero &middot; Enterprise Portal</p>
         </div>
       </footer>
+
+      {/* Send SMS Modal */}
+      {showSmsModal === "selected" && (
+        <SendSMSModal
+          candidates={candidates
+            .filter((c) => selectedIds.has(c.id))
+            .map((c) => ({
+              id: c.id,
+              firstName: c.firstName,
+              lastName: c.lastName,
+              phone: c.email, // phone field available in CandidateRow — will be fetched server-side
+            }))}
+          onClose={() => setShowSmsModal(false)}
+          onSent={() => { setSelectedIds(new Set()); fetchCandidates(); }}
+        />
+      )}
+      {showSmsModal === "all" && (
+        <SendSMSModal
+          filters={Object.fromEntries(
+            Object.entries(filters).filter(([, v]) => v.length > 0),
+          )}
+          filterDescription={Object.entries(filters)
+            .filter(([, v]) => v.length > 0)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(" · ")}
+          totalCount={candidates.length}
+          onClose={() => setShowSmsModal(false)}
+          onSent={() => fetchCandidates()}
+        />
+      )}
     </div>
   );
 }
