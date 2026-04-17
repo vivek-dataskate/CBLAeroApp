@@ -77,6 +77,12 @@ export function createClayWebhookReceiver(args: CreateClayWebhookReceiverArgs): 
     source: CLAY_WEBHOOK_SOURCE,
     auth: new BearerTokenWebhookAuth(args.secret),
     maxPayloadBytes: args.maxPayloadBytes ?? CLAY_MAX_PAYLOAD_BYTES,
+    // Story 2.8 invariant: Clay's HTTP API column retries whole batches on
+    // any non-200. The framework's default 100/min rate-limit would trip
+    // during bulk backfills and cause double-counted `sync_runs` bucket
+    // increments via retry. Disable per-process rate-limiting here;
+    // defense-in-depth for DoS lives at the edge (Render / Cloudflare).
+    rateLimitMax: Number.MAX_SAFE_INTEGER,
     extractEvents: (payload: unknown) => {
       const rows = extractClayRows(payload);
       return rows.map((row) => ({
