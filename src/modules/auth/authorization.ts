@@ -21,6 +21,7 @@ export type ProtectedAction =
   | "admin:view-sync-errors"
   | "admin:view-scheduler"
   | "admin:manage-scheduler"
+  | "admin:view-providers"
   | "compliance:read-data-residency";
 
 type AuthorizationAllow = {
@@ -66,6 +67,7 @@ const ROLE_ACTION_MAP: Record<SessionRole, ReadonlySet<ProtectedAction>> = {
     "admin:view-sync-errors",
     "admin:view-scheduler",
     "admin:manage-scheduler",
+    "admin:view-providers",
     "compliance:read-data-residency",
   ]),
   "compliance-officer": new Set([
