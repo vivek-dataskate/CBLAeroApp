@@ -35,6 +35,7 @@ import { getSupabaseAdminClient, isSupabaseConfigured } from '@/modules/persiste
 import {
   WebhookProcessor,
   BearerTokenWebhookAuth,
+  ensureProvidersInitialized,
 } from '@/modules/providers';
 import {
   createClayWebhookReceiver,
@@ -85,6 +86,19 @@ export function __resetClayWebhookCacheForTests(): void {
 
 export async function POST(request: NextRequest) {
   const startedAt = Date.now();
+
+  // ── 0. Provider framework init (Task 4) ──
+  // Idempotent: first caller does work, subsequent callers await the shared
+  // promise. Swallowed so observability wiring can never block ingestion —
+  // Clay already has a narrow auth window and we must not add a new failure mode.
+  try {
+    await ensureProvidersInitialized();
+  } catch (initErr) {
+    console.error(
+      '[ClayWebhook] ensureProvidersInitialized failed (non-fatal):',
+      initErr instanceof Error ? initErr.message : initErr,
+    );
+  }
 
   // ── 1. Env check ──
   if (!CLAY_WEBHOOK_SECRET) {

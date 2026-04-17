@@ -54,3 +54,10 @@ export { ProviderRegistry } from './registry';
 export { HealthTracker } from './health-tracker';
 export { PostgresHealthEventStore } from './health-event-store';
 export type { HealthEventRow } from './health-event-store';
+
+// Startup wiring (story 1-12a task 4)
+export {
+  ensureProvidersInitialized,
+  getProviderRegistry,
+  resetProvidersForTest,
+} from './startup';

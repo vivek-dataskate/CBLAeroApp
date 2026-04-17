@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock all external dependencies
 const mocks = vi.hoisted(() => ({
   fetchCeipalApplicants: vi.fn().mockResolvedValue([]),
-  mapCeipalApplicantToCandidate: vi.fn((a: any) => ({ firstName: a.first_name, email: a.email_address, source: 'ceipal', ceipalId: a.email_address })),
+  mapCeipalApplicantToCandidate: vi.fn((a: Record<string, unknown>) => ({ firstName: a.first_name, email: a.email_address, source: 'ceipal', ceipalId: a.email_address })),
   parseInbox: vi.fn().mockResolvedValue([]),
   isSupabaseConfigured: vi.fn(() => false),
   getSupabaseAdminClient: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock('@/modules/ats', () => ({
 vi.mock('@/modules/email', () => ({
   MicrosoftGraphEmailParser: class {
     parseInbox = mocks.parseInbox;
-    processInbox = vi.fn(async (_addrs: string[], _ids: Set<string>, handler: (r: any) => Promise<void>) => {
+    processInbox = vi.fn(async (_addrs: string[], _ids: Set<string>, handler: (r: Record<string, unknown>) => Promise<void>) => {
       const records = await mocks.parseInbox();
       let processed = 0, failed = 0;
       for (const r of records) {
@@ -59,7 +59,7 @@ vi.mock('@/modules/ingestion/index', () => ({
   createSyncRun: vi.fn().mockResolvedValue('mock-run-id'),
   completeSyncRun: vi.fn().mockResolvedValue(undefined),
   failSyncRun: vi.fn().mockResolvedValue(undefined),
-  mapToCandidateRow: vi.fn((record: any, source: string) => ({ ...record, source })),
+  mapToCandidateRow: vi.fn((record: Record<string, unknown>, source: string) => ({ ...record, source })),
 }));
 
 vi.mock('@/features/candidate-management/infrastructure/fingerprint-repository', () => ({
@@ -247,7 +247,7 @@ describe('registerIngestionJobs', () => {
     registerIngestionJobs(mockScheduler);
 
     expect(mockScheduler.register).toHaveBeenCalledTimes(7);
-    const names = mockScheduler.register.mock.calls.map((c: any) => c[0].name);
+    const names = mockScheduler.register.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
     expect(names).toContain('CeipalIngestionJob');
     expect(names).toContain('EmailIngestionJob');
     expect(names).toContain('OneDriveResumePollerJob');

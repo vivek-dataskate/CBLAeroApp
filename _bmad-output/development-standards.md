@@ -2,15 +2,44 @@
 
 These standards are mandatory for all stories. Dev agents and reviewers must follow these patterns. Code reviews should verify compliance.
 
-## 1. External API Calls — Retry & Rate Limiting
+## 1. External API Calls — Provider Framework (current) / `fetchWithRetry` (legacy)
 
-All calls to external APIs (Anthropic, Microsoft Graph, Ceipal, Supabase Storage, any third-party) must use `fetchWithRetry` from `@/modules/ingestion/fetch-with-retry.ts`. **NEVER use bare `fetch()` for external calls.**
+As of Story 1-12a (merged 2026-04-17), **new outbound integrations MUST use the provider framework** in `src/modules/providers/*` (`BaseProviderClient` + `AuthStrategy` + `ProviderRegistry`). The legacy `fetchWithRetry` remains in use for integrations that have not yet been migrated (Graph, Anthropic, Supabase Storage — Stories 1-12b and 1-12c) and should be treated as deprecated for new code.
 
-### Centralized Retry Utility
+### Provider framework (preferred, new code)
+
+```typescript
+import { BaseProviderClient } from '@/modules/providers/base-client';
+import { ApiKeyHeaderAuth } from '@/modules/providers/auth';
+
+const client = new BaseProviderClient({
+  name: 'my-provider',
+  baseUrl: 'https://api.example.com',
+  auth: new ApiKeyHeaderAuth(process.env.MY_API_KEY!, 'x-api-key'),
+  timeoutMs: 10_000,
+  maxRetries: 3,
+});
+const result = await client.request('GET', '/v1/resource', {
+  costMeta: { endpoint: 'resource/read' },
+});
+if (!result.ok) { /* structured error with classification */ }
+```
+
+**What the framework gives you that `fetchWithRetry` doesn't:**
+- `AuthStrategy` injection (API key, bearer, OAuth token exchange) with instance-scoped cache + concurrent-refresh coalescing — no more module-level token singletons
+- `ProviderRegistry` health tracking, auto-degrade (30% error rate / ≥10 attempts), auto-recover, and restart-surviving `mode` state via `provider_routing_policies`
+- `PostgresHealthEventStore` append-only audit of every mode transition
+- Structured `ProviderLogEntry` JSON-line emission per call (wired to stdout by `ensureProvidersInitialized()` at startup) — downstream aggregators can filter on `kind: "provider_log"`
+- Classifies errors as `transient | permanent | auth_failure`; only `transient` counts against the kill-switch math, so auth outages don't trip the kill switch
+- Register with `providerRegistry.register(name)` + `wireClient(name, client)` and call `ensureProvidersInitialized()` at the top of every route entry point that uses the provider
+- Webhooks: use `BaseWebhookReceiver` + `WebhookHandler` + `WebhookProcessor` for inbound (Story 1-12 pattern; reference: `src/modules/providers/clay/`)
+
+### `fetchWithRetry` (legacy — existing Graph / Anthropic / Supabase Storage code only)
+
 ```typescript
 import { fetchWithRetry } from '@/modules/ingestion/fetch-with-retry';
 
-// Every external HTTP call MUST use this — no exceptions
+// Retained for pre-migration integrations — do NOT use for new providers.
 const response = await fetchWithRetry(url, { method: 'POST', ... });
 ```
 

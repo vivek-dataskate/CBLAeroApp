@@ -1556,6 +1556,14 @@ Processing order on inbound opt-out:
   - delivery leads are alerted immediately with provider, channel, failure rate, queued job count, and current routing mode
   - once the primary provider recovers, failback requires manual approval; the system never auto-fails back during an incident window
 
+**Implementation status (as of 2026-04-17):**
+
+- **Framework delivered** (Story 1-12, merged 2026-04-16): `BaseProviderClient`, `BaseWebhookReceiver`, `ProviderRegistry`, `PostgresHealthEventStore`, `provider_routing_policies` table, `provider_health_events` append-only audit log. Auto-degrade at 30% error rate / 10 attempts; auth-failure classification excluded from kill-switch math; degraded → normal auto-recovery on sustained success.
+- **First providers migrated** (Story 1-12a, merged 2026-04-17): Clay inbound webhook, Clay outbound API client (registered but not yet consumed by product code), and Ceipal ATS outbound poller now run on the framework. Routing-policy seed + mode-restore-from-DB lives in `src/modules/providers/startup.ts::ensureProvidersInitialized()`, called idempotently from the Clay webhook route and `CeipalIngestionJob.run()`.
+- **Structured logs in production**: each outbound provider call emits a JSON-line `ProviderLogEntry` via the startup-attached sink (`console.log(JSON.stringify({ kind: 'provider_log', ... }))`). Inbound webhooks emit `WebhookLogEntry` analogues.
+- **Outstanding gap — kill-switch enforcement at call sites**: the framework persists, restores, and audits `mode` transitions, but `fetchCeipalApplicants()` and outbound Clay calls do not yet refuse traffic when `registry.getMode(provider) === 'kill_switched'`. Enforcement is observability-only today; an explicit `guardOutboundCall` step is scheduled alongside the Graph/Anthropic/Supabase migrations (Stories 1-12b / 1-12c) so the enforcement contract lands at the same time as the critical-path providers.
+- **Deferred hardening** (tracked in `_bmad-output/deferred-work.md`): mode value normalization (whitespace / trim), dual-client provisioning paths, startup retry-on-transient-Supabase-failure, `expires_in ≤ 0` defensive re-auth (partially addressed in Ceipal strategy), Clay-outbound `provider_routing_policies` seed row.
+
 ### 20. Throughput Evolution and Service-Boundary Extraction — Monolith+Worker Until Triggered
 
 **Decision:** The launch architecture remains a web monolith plus background workers, but service extraction is governed by explicit throughput and deployment-cadence triggers. Extraction is not ad hoc.
