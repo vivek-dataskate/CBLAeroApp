@@ -5,7 +5,7 @@
 # story_location: docs/implementation_artifacts/stories
 
 generated: 2026-03-11
-last_updated: 2026-04-17  # Story 1-12a Task 1 in-progress (PR A)
+last_updated: 2026-04-17  # Story 1-12a Tasks 2-5 bundled in PR B → review
 project: CBLAero
 project_key: NOKEY
 tracking_system: file-system
@@ -68,7 +68,7 @@ development_status:
   1-10-implement-shared-api-auth-middleware: done  # depends on 1.8
   1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
   1-12-edge-system-provider-framework: done  # 2026-04-16: framework complete + 2 code reviews, 110 tests passing
-  1-12a-migrate-clay-ceipal: in-progress  # 2026-04-17: PR A (Task 1 — Clay webhook migration) in review; Tasks 2-5 bundled for PR B
+  1-12a-migrate-clay-ceipal: review  # 2026-04-17: PR A (Task 1) in review; PR B (Tasks 2-5 — Clay outbound + Ceipal migration + registry seed + audit) in review
   1-12b-migrate-graph-anthropic: backlog  # depends on 1.12a
   1-12c-migrate-supabase: backlog  # depends on 1.12b
   epic-1-retrospective: done

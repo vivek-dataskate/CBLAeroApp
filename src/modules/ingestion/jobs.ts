@@ -1,4 +1,5 @@
 import { fetchCeipalApplicants, mapCeipalApplicantToCandidate, getCeipalCreatedOn } from '../ats';
+import { ensureProvidersInitialized } from '../providers';
 import { MicrosoftGraphEmailParser } from '../email';
 import { acquireGraphToken } from '../email/graph-auth';
 import { getSupabaseAdminClient, isSupabaseConfigured } from '../persistence';
@@ -99,6 +100,17 @@ export class CeipalIngestionJob implements SchedulerJob {
   async run(params?: { startPage?: number; maxPages?: number; since?: Date }) {
     const runId = await createSyncRun('ceipal');
     try {
+      // Lazy provider init — idempotent. Wires Ceipal into the registry and
+      // attaches PostgresHealthEventStore before the first outbound call.
+      try {
+        await ensureProvidersInitialized();
+      } catch (initErr) {
+        console.error(
+          '[CeipalIngestionJob] ensureProvidersInitialized failed (non-fatal):',
+          initErr instanceof Error ? initErr.message : initErr,
+        );
+      }
+
       const startPage = params?.startPage ?? 1;
       const maxPages = params?.maxPages ?? 50;
 

@@ -1,225 +1,74 @@
-import { fetchWithRetry } from '../ingestion/fetch-with-retry';
-
 /**
  * Ceipal ATS connector — v1 API
+ *
+ * Story 1-12a Task 3: HTTP transport migrated onto `BaseProviderClient`. This
+ * module retains its public surface (`fetchCeipalApplicants`,
+ * `mapCeipalApplicantToCandidate`, `getCeipalCreatedOn`, `CeipalApplicant`,
+ * `clearCeipalTokenCacheForTest`) so `CeipalIngestionJob` and the rest of the
+ * codebase see zero change — but the underlying calls go through the provider
+ * framework with structured logging, auth-failure classification, and
+ * registry-driven health tracking.
  *
  * Required env vars (set in Render):
  *   CEIPAL_API_KEY      — API key from Ceipal admin panel
  *   CEIPAL_USERNAME     — Ceipal login username
  *   CEIPAL_PASSWORD     — Ceipal login password
- *
- * Auth endpoint:  POST https://api.ceipal.com/v1/createAuthtoken/
- * Data endpoint:  GET  https://api.ceipal.com/getCustomApplicantDetails/{endpoint_key}
- *
- * The endpoint key is embedded in the URL — stored as CEIPAL_ENDPOINT_KEY env var.
- * Default page size: 100 records per page.
+ *   CEIPAL_ENDPOINT_KEY — Ceipal custom applicant endpoint key
+ *   CEIPAL_AUTH_URL     — (optional) override auth endpoint
+ *   CEIPAL_DATA_URL     — (optional) override data endpoint
  */
+import {
+  getSharedCeipalClient,
+  clearCeipalTokenCacheForTest as _clearCeipalTokenCacheForTest,
+  setSharedCeipalClient,
+  resetSharedCeipalClientForTest,
+} from '@/modules/providers/ceipal';
+import type { CeipalApplicant } from './ceipal-types';
 
-const CEIPAL_DEFAULT_AUTH_URL = 'https://api.ceipal.com/v1/createAuthtoken/';
-const CEIPAL_DEFAULT_DATA_URL = 'https://api.ceipal.com/getCustomApplicantDetails';
-const CEIPAL_PAGE_SIZE = 50;
-
-type CeipalTokenCache = {
-  token: string;
-  expiresAt: number;
-};
-
-// Module-level cache: resets on serverless cold starts (acceptable — re-auth is cheap)
-let tokenCache: CeipalTokenCache | null = null;
-
-function getCeipalConfig() {
-  const apiKey = process.env.CEIPAL_API_KEY;
-  const username = process.env.CEIPAL_USERNAME;
-  const password = process.env.CEIPAL_PASSWORD;
-  const endpointKey = process.env.CEIPAL_ENDPOINT_KEY;
-  const authUrl = process.env.CEIPAL_AUTH_URL || CEIPAL_DEFAULT_AUTH_URL;
-  const dataUrl = process.env.CEIPAL_DATA_URL || CEIPAL_DEFAULT_DATA_URL;
-
-  if (!apiKey || !username || !password || !endpointKey) {
-    throw new Error(
-      'Ceipal not configured. Required env vars: CEIPAL_API_KEY, CEIPAL_USERNAME, CEIPAL_PASSWORD, CEIPAL_ENDPOINT_KEY'
-    );
-  }
-
-  return { apiKey, username, password, endpointKey, authUrl, dataUrl };
-}
-
-async function acquireCeipalToken(): Promise<string> {
-  // Return cached token with 5-min buffer
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 300_000) {
-    return tokenCache.token;
-  }
-
-  const { apiKey, username, password, authUrl } = getCeipalConfig();
-
-  const response = await fetchWithRetry(authUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: apiKey, email: username, password, json: 1 }),
-  });
-
-  if (!response.ok) {
-    // Do NOT log response body — may echo back credentials
-    throw new Error(`[Ceipal] Auth failed (${response.status}) — check Ceipal admin panel for details`);
-  }
-
-  const text = await response.text();
-
-  // Response may be XML or JSON — try both
-  let token: string | undefined;
-  let expiresIn = 3600; // default 1 hour
-  const xmlMatch = text.match(/<access_token>([^<]+)<\/access_token>/);
-  if (xmlMatch) {
-    token = xmlMatch[1];
-  } else {
-    try {
-      const data = JSON.parse(text) as { token?: string; access_token?: string; expires_in?: number };
-      token = data.token ?? data.access_token;
-      if (typeof data.expires_in === 'number' && data.expires_in > 0) {
-        expiresIn = data.expires_in;
-      }
-    } catch (parseErr) {
-      console.warn('[Ceipal] JSON parse failed for auth response:', parseErr instanceof Error ? parseErr.message : parseErr);
-    }
-  }
-
-  if (!token) {
-    // Truncate and redact — auth response may contain echoed credentials
-    throw new Error(`[Ceipal] Auth response missing token (response length: ${text.length})`);
-  }
-
-  tokenCache = { token, expiresAt: Date.now() + expiresIn * 1000 };
-  console.log(`[Ceipal] Token acquired, expires in ${expiresIn}s`);
-
-  return token;
-}
-
-export type CeipalApplicant = {
-  first_name: string;
-  middle_name?: string;
-  last_name: string;
-  nick_name?: string;
-  email_address: string;
-  alternate_email_address?: string;
-  home_phone_number?: string;
-  mobile_number?: string;
-  work_phone_number?: string;
-  other_phone?: string;
-  date_of_birth?: string;
-  work_authorization?: string;
-  clearance?: string;
-  address?: string;
-  city?: string;
-  country?: string;
-  state?: string;
-  zip_code?: string;
-  source?: string;
-  experience?: string;
-  applicant_status?: string;
-  job_title?: string;
-  skills?: string;
-  primary_skills?: string;
-  technology?: string;
-  relocation?: string;
-  gender?: string;
-  veteran_status?: string;
-  work_authorization_expiry?: string;
-  linkedin_profile_url?: string;
-  facebook_profile_url?: string;
-  twitter_profile_url?: string;
-  additional_comments?: string;
-  expected_pay?: string;
-  applicant_id?: string;
-  resume_path?: string;
-  referred_by?: string;
-  applicant_group?: string;
-  ownership?: string;
-  tax_terms?: number;
-  race_ethnicity?: string;
-  disability?: string;
-  gpa?: string;
-  referral_employee?: string;
-  video_reference?: string;
-  skype_id?: string;
-  // ssn intentionally excluded — PII that must not be stored or logged
-  modified_date?: string;
-  created_on?: string;
-  created_by?: string;
-  modified_by?: string;
+export type { CeipalApplicant };
+export {
+  setSharedCeipalClient,
+  resetSharedCeipalClientForTest,
 };
 
 /**
  * Fetch all applicants from Ceipal with pagination.
  * Supports optional date filter for incremental sync.
+ *
+ * Signature frozen by Story 2-3 preservation contract — internal transport
+ * now flows through `CeipalProviderClient` / `BaseProviderClient`.
  */
 export async function fetchCeipalApplicants(options?: {
   since?: Date;
   maxPages?: number;
   startPage?: number;
 }): Promise<CeipalApplicant[]> {
-  const token = await acquireCeipalToken();
-  const { endpointKey, dataUrl } = getCeipalConfig();
-  const baseUrl = `${dataUrl}/${endpointKey}`;
-
-  const all: CeipalApplicant[] = [];
-  let page = options?.startPage ?? 1;
-  const maxPages = options?.maxPages ?? 50;
-  const endPage = page + maxPages - 1;
-
-  while (page <= endPage) {
-    const url = `${baseUrl}?json=1&paging_length=${CEIPAL_PAGE_SIZE}&page=${page}` +
-      (options?.since ? `&modified_after=${options.since.toISOString().slice(0, 10)}` : '');
-
-    // Delay between pages to avoid connection resets
-    if (page > 1) await new Promise((r) => setTimeout(r, 1_000));
-
-    const response = await fetchWithRetry(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Ceipal fetch failed on page ${page} (${response.status}): ${text}`);
-    }
-
-    const data = await response.json() as { results?: CeipalApplicant[]; count?: number } | CeipalApplicant[];
-
-    // Handle both array and paginated object response shapes
-    const results = Array.isArray(data) ? data : (data.results ?? []);
-
-    if (results.length === 0) break;
-
-    all.push(...results);
-
-    // Stop if we got a partial page (last page)
-    if (results.length < CEIPAL_PAGE_SIZE) break;
-
-    page++;
+  const client = getSharedCeipalClient();
+  if (!client) {
+    throw new Error(
+      'Ceipal not configured. Required env vars: CEIPAL_API_KEY, CEIPAL_USERNAME, CEIPAL_PASSWORD, CEIPAL_ENDPOINT_KEY',
+    );
   }
-
-  if (page > endPage) {
-    console.warn(`[Ceipal] maxPages (${maxPages}) reached at page ${page} — results may be truncated. Consider increasing maxPages or using startPage for resumption.`);
-  }
-
-  return all;
+  return client.fetchApplicants(options);
 }
 
-/**
- * Map a Ceipal applicant to the ingestion candidate shape.
- */
-/** Extract the created_on timestamp from a CEIPAL applicant for cursor tracking */
+/** Extract the created_on timestamp from a CEIPAL applicant for cursor tracking. */
 export function getCeipalCreatedOn(a: CeipalApplicant): string | undefined {
   return a.created_on?.trim() || undefined;
 }
 
+/**
+ * Map a Ceipal applicant to the ingestion candidate shape.
+ * Pure function — unchanged across the Task 3 migration.
+ */
 export function mapCeipalApplicantToCandidate(a: CeipalApplicant): Record<string, unknown> {
-  /** Trim whitespace, return undefined for empty */
+  /** Trim whitespace, return undefined for empty. */
   const clean = (v?: string | number | null) => {
     if (v == null) return undefined;
     const s = String(v).trim();
     return s || undefined;
   };
-  /** Clean + strip "NA" sentinel — use only for status/flag fields, not names */
+  /** Clean + strip "NA" sentinel — use only for status/flag fields, not names. */
   const cleanNA = (v?: string | number | null) => {
     const s = clean(v);
     return s && s !== 'NA' ? s : undefined;
@@ -266,6 +115,7 @@ export function mapCeipalApplicantToCandidate(a: CeipalApplicant): Record<string
   };
 }
 
+/** Preserved test hook — delegates to the strategy cache on the shared client. */
 export function clearCeipalTokenCacheForTest(): void {
-  tokenCache = null;
+  _clearCeipalTokenCacheForTest();
 }
