@@ -29,6 +29,8 @@ import {
 } from './ceipal';
 import type { CeipalProviderClient } from './ceipal/ceipal-client';
 import type { CeipalApplicant } from '@/modules/ats/ceipal-types';
+import type { BaseProviderClient } from './base-client';
+import type { ProviderLogEntry } from './types';
 import { isSupabaseConfigured, getSupabaseAdminClient } from '@/modules/persistence';
 
 /** The one `ProviderRegistry` the entire app uses. */
@@ -93,6 +95,7 @@ async function initializeImpl(
   if (clayClient) {
     safeRegister(registry, 'clay-outbound');
     registry.wireClient('clay-outbound', clayClient.base);
+    attachProviderLogSink(clayClient.base);
   }
 
   // 1c. Ceipal outbound (registered only when credentials are set).
@@ -102,6 +105,7 @@ async function initializeImpl(
   if (ceipalClient) {
     safeRegister(registry, 'ceipal');
     registry.wireClient('ceipal', ceipalClient.base);
+    attachProviderLogSink(ceipalClient.base);
     // Share the singleton so `fetchCeipalApplicants()` uses the registered
     // instance rather than building a second one on first call.
     setSharedCeipalClient(ceipalClient);
@@ -168,4 +172,24 @@ async function initializeImpl(
 function safeRegister(registry: ProviderRegistry, name: string): void {
   if (registry.getProvider(name)) return;
   registry.register(name);
+}
+
+/**
+ * Review patch (F11 / AC 6 #6): `BaseProviderClient.onLog` defaults to a
+ * no-op. AC 6 #6 explicitly requires each outbound call emits a
+ * `ProviderLogEntry` JSON line that downstream log aggregators can parse.
+ * Attach a default stdout JSON sink at startup so the structured stream is
+ * live in production. Called only from startup (not from unit tests that
+ * construct clients directly), so overwriting a client-local `onLog` here is
+ * safe — tests that audit log shape build their own clients.
+ */
+function attachProviderLogSink(base: BaseProviderClient): void {
+  base.onLog = (entry: ProviderLogEntry) => {
+    try {
+      console.log(JSON.stringify({ kind: 'provider_log', ...entry }));
+    } catch {
+      // Non-fatal: circular reference in a custom cost metric should never
+      // block outbound traffic. Swallow and move on.
+    }
+  };
 }

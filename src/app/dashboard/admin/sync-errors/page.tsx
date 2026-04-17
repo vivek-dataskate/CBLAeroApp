@@ -80,8 +80,10 @@ function SyncErrorsInner() {
 
   useEffect(() => {
     if (!runId) {
-      setLoading(false);
-      return;
+      // Defer the state update so we don't call setState synchronously inside
+      // the effect (Next 16 / React-hooks lint: set-state-in-effect).
+      const t = setTimeout(() => setLoading(false), 0);
+      return () => clearTimeout(t);
     }
     fetch(`/api/internal/admin/sync-errors?runId=${encodeURIComponent(runId)}`)
       .then((r) => {

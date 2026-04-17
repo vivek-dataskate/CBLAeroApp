@@ -94,13 +94,19 @@ export class CeipalProviderClient<TApplicant = CeipalApplicantMinimal> {
    */
   async fetchApplicants(options?: FetchApplicantsOptions): Promise<TApplicant[]> {
     const all: TApplicant[] = [];
-    let page = options?.startPage ?? 1;
+    const startPage = options?.startPage ?? 1;
+    let page = startPage;
     const maxPages = options?.maxPages ?? CEIPAL_DEFAULT_MAX_PAGES;
     const endPage = page + maxPages - 1;
     const sinceStr = options?.since ? options.since.toISOString().slice(0, 10) : null;
+    // Review patch (F10): only warn on maxPages truncation when the loop both
+    // ran AND exited because the last iteration consumed a full page AND we hit
+    // the cap. maxPages <= 0 or natural partial-page exits stay silent.
+    let lastPageWasFull = false;
+    let ranAtLeastOnce = false;
 
     while (page <= endPage) {
-      if (page > (options?.startPage ?? 1)) {
+      if (page > startPage) {
         await new Promise((r) => setTimeout(r, this.interPageDelayMs));
       }
 
@@ -112,27 +118,52 @@ export class CeipalProviderClient<TApplicant = CeipalApplicantMinimal> {
       > = await this.base.request('GET', `${this.dataPath}${qs}`, {
         costMeta: { endpoint: 'applicant/search' },
       });
+      ranAtLeastOnce = true;
 
       if (!result.ok) {
+        // Review patch (F2): on 401 the token was revoked mid-run. Invalidate
+        // the auth cache so the next CeipalIngestionJob run (or retry) forces
+        // a fresh token. Without this, `isExpired()` continues to see the
+        // 55-minute refresh buffer as valid and wedges the client until
+        // process restart.
+        if (result.status === 401) {
+          this.auth.clearCacheForTest();
+        }
         throw new Error(
           `Ceipal fetch failed on page ${page} (${result.status}): ${result.error ?? 'unknown error'}`,
         );
       }
 
       const data = result.data;
+      const isRecognizedShape =
+        Array.isArray(data) ||
+        (data !== null && typeof data === 'object' && Array.isArray((data as { results?: unknown }).results));
       const results: TApplicant[] = Array.isArray(data)
         ? data
         : ((data as { results?: TApplicant[] } | null)?.results ?? []);
+
+      // Review patch (F8): loud signal when the response shape drifts — silent
+      // empty return used to mask Ceipal-side quota / schema errors. Surface
+      // once per page and let the empty-results break below still fire.
+      if (!isRecognizedShape) {
+        console.warn(
+          `[Ceipal] Unexpected page response shape at page ${page}; treating as empty. Body type: ${typeof data}`,
+        );
+      }
 
       if (results.length === 0) break;
       all.push(...results);
 
       // Partial page → end of data
-      if (results.length < CEIPAL_PAGE_SIZE) break;
+      if (results.length < CEIPAL_PAGE_SIZE) {
+        lastPageWasFull = false;
+        break;
+      }
+      lastPageWasFull = true;
       page++;
     }
 
-    if (page > endPage) {
+    if (ranAtLeastOnce && lastPageWasFull && page > endPage) {
       console.warn(
         `[Ceipal] maxPages (${maxPages}) reached at page ${page} — results may be truncated. Consider increasing maxPages or using startPage for resumption.`,
       );

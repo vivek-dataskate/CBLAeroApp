@@ -231,6 +231,20 @@ describe('Clay webhook audit integration (AC 6 item 15)', () => {
     // ── candidate upsert contract ──
     expect(ingestionMocks.batchUpsertCandidatesFromATS).toHaveBeenCalledTimes(1);
 
+    // Review patch (F13 / AC 6 #15): candidate upsert must stamp the
+    // configured default assignee — the mapper emits camelCase
+    // `sourceRecruiterActorId`; `batchUpsertCandidatesFromATS` translates to
+    // snake_case `source_recruiter_actor_id` on the final Supabase write
+    // (Story 2-8).
+    const upsertCall = ingestionMocks.batchUpsertCandidatesFromATS.mock.calls[0];
+    expect(upsertCall).toBeDefined();
+    const upsertRows = upsertCall[0] as Array<Record<string, unknown>>;
+    expect(Array.isArray(upsertRows)).toBe(true);
+    expect(upsertRows.length).toBeGreaterThanOrEqual(1);
+    for (const row of upsertRows) {
+      expect(row.sourceRecruiterActorId).toBe('test-assignee-actor-id');
+    }
+
     // ── provider_health_events contract — no transitions on happy path ──
     expect(healthEventInserts).toHaveLength(0);
 

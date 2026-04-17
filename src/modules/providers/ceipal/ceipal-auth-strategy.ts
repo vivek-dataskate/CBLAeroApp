@@ -127,6 +127,11 @@ export class CeipalAuthStrategy implements AuthStrategy {
     const text = await response.text();
     let token: string | undefined;
     let expiresIn = DEFAULT_EXPIRES_IN_S;
+    // Review patch (F7): track whether the server actually sent a positive
+    // `expires_in`. If it sent 0 / negative / missing, we force-refresh on the
+    // next call instead of caching the default 3600s for a token the server
+    // says is already dead.
+    let serverProvidedExpiry = false;
 
     // Response may be XML or JSON — try XML regex first (faster path).
     const xmlMatch = text.match(/<access_token>([^<]+)<\/access_token>/);
@@ -142,6 +147,11 @@ export class CeipalAuthStrategy implements AuthStrategy {
         token = data.token ?? data.access_token;
         if (typeof data.expires_in === 'number' && data.expires_in > 0) {
           expiresIn = data.expires_in;
+          serverProvidedExpiry = true;
+        } else if (typeof data.expires_in === 'number') {
+          // Server sent a non-positive value (0 / negative) — treat as
+          // "token already expired; refresh on next call".
+          serverProvidedExpiry = false;
         }
       } catch (parseErr) {
         console.warn(
@@ -156,8 +166,18 @@ export class CeipalAuthStrategy implements AuthStrategy {
       throw new Error(`[Ceipal] Auth response missing token (response length: ${text.length})`);
     }
 
-    this.cache = { token, expiresAt: Date.now() + expiresIn * 1000 };
-    console.log(`[Ceipal] Token acquired, expires in ${expiresIn}s`);
+    // XML responses don't carry `expires_in`, so serverProvidedExpiry stays
+    // false — but XML is only emitted by Ceipal accounts configured for legacy
+    // SOAP-style auth and we keep the default 1h buffer there.
+    const expiresAt = serverProvidedExpiry || xmlMatch
+      ? Date.now() + expiresIn * 1000
+      : Date.now() - 1;
+    this.cache = { token, expiresAt };
+    console.log(
+      serverProvidedExpiry || xmlMatch
+        ? `[Ceipal] Token acquired, expires in ${expiresIn}s`
+        : '[Ceipal] Token acquired but server reported non-positive expires_in — will force refresh on next call',
+    );
   }
 
   /** Exposed for tests — resets cache so the next call forces a refresh. */

@@ -312,7 +312,7 @@ async function extractWithLLM(
     return { extraction: null, error: 'LLM call returned null — client unavailable', extractionModel: model };
   }
 
-  let responseText = result.text
+  const responseText = result.text
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/, '')
     .trim();
@@ -410,7 +410,7 @@ async function extractWithLLMVision(
     return { extraction: null, error: 'LLM vision call returned null — client unavailable', extractionModel: model };
   }
 
-  let responseText = result.text
+  const responseText = result.text
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/, '')
     .trim();
