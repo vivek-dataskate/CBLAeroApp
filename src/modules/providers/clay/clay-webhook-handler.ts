@@ -120,7 +120,7 @@ export async function processClayRow(
       JSON.stringify({
         event: 'fingerprint_hit',
         scope: 'in_batch',
-        type: 'ats_external_id',
+        type: 'clay_profile_id',
         source: 'ats',
         tenantId: DEFAULT_TENANT_ID,
         hash: fingerprint.slice(0, 24),
@@ -131,13 +131,13 @@ export async function processClayRow(
 
   // 2b. Persisted fingerprint dedup (content_fingerprints).
   try {
-    const seen = await isAlreadyProcessed(DEFAULT_TENANT_ID, 'ats_external_id', fingerprint);
+    const seen = await isAlreadyProcessed(DEFAULT_TENANT_ID, 'clay_profile_id', fingerprint);
     if (seen) {
       console.log(
         JSON.stringify({
           event: 'fingerprint_hit',
           scope: 'persisted',
-          type: 'ats_external_id',
+          type: 'clay_profile_id',
           source: 'ats',
           tenantId: DEFAULT_TENANT_ID,
           hash: fingerprint.slice(0, 24),
@@ -194,7 +194,7 @@ export async function processClayRow(
   try {
     await recordFingerprint({
       tenantId: DEFAULT_TENANT_ID,
-      type: 'ats_external_id',
+      type: 'clay_profile_id',
       hash: fingerprint,
       source: 'ats',
     });

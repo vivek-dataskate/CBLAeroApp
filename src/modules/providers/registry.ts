@@ -170,8 +170,10 @@ export class ProviderRegistry {
     const entry = this.providers.get(name);
     if (!entry || entry.mode === 'kill_switched') return;
 
-    const snap = entry.tracker.snapshot();
-    const nonAuthAttempts = entry.tracker.nonAuthAttemptCount();
+    // Review patch M-3: single-prune snapshot avoids the TOCTOU where
+    // snapshot() + nonAuthAttemptCount() could disagree at a window boundary.
+    const snap = entry.tracker.snapshotWithNonAuthAttempts();
+    const nonAuthAttempts = snap.nonAuthAttempts;
 
     // Kill-switch: >=80% error rate AND >=50 non-auth attempts
     if (nonAuthAttempts >= KILL_SWITCH_MIN_ATTEMPTS && snap.errorRate >= KILL_SWITCH_ERROR_RATE) {

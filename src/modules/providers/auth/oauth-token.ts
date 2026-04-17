@@ -1,16 +1,24 @@
 import type { AuthStrategy } from '../types';
 
 const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
+const DEFAULT_REFRESH_COOLDOWN_MS = 30_000;
 
 /**
  * OAuth2 client-credentials token with automatic refresh.
  * Caches the access token, coalesces concurrent refreshes via a shared promise,
  * and validates the token response body before caching.
+ *
+ * Review patch H-2: after a failed refresh, subsequent calls within
+ * `refreshCooldownMs` reject fast with the cached error instead of spawning a
+ * new fetch against the IdP. Without this, an IdP outage produces one
+ * outbound request per caller — storm.
  */
 export class OAuthTokenAuth implements AuthStrategy {
   private accessToken: string | null = null;
   private expiresAt = 0;
   private pendingRefresh: Promise<void> | null = null;
+  private lastFailureAt = 0;
+  private lastFailureError: Error | null = null;
 
   constructor(
     private readonly tokenUrl: string,
@@ -20,6 +28,8 @@ export class OAuthTokenAuth implements AuthStrategy {
     private readonly refreshBufferMs: number = 30_000,
     /** Timeout for the token endpoint fetch (default 10s). */
     private readonly refreshTimeoutMs: number = DEFAULT_REFRESH_TIMEOUT_MS,
+    /** Cooldown after a failed refresh before we retry the IdP (default 30s). */
+    private readonly refreshCooldownMs: number = DEFAULT_REFRESH_COOLDOWN_MS,
   ) {}
 
   async applyAuth(headers: Record<string, string>): Promise<Record<string, string>> {
@@ -46,9 +56,21 @@ export class OAuthTokenAuth implements AuthStrategy {
       await this.pendingRefresh;
       return;
     }
-    this.pendingRefresh = this.refreshToken().finally(() => {
-      this.pendingRefresh = null;
-    });
+    if (this.lastFailureError && Date.now() - this.lastFailureAt < this.refreshCooldownMs) {
+      throw this.lastFailureError;
+    }
+    this.pendingRefresh = this.refreshToken()
+      .then(() => {
+        this.lastFailureError = null;
+      })
+      .catch((err) => {
+        this.lastFailureAt = Date.now();
+        this.lastFailureError = err instanceof Error ? err : new Error(String(err));
+        throw err;
+      })
+      .finally(() => {
+        this.pendingRefresh = null;
+      });
     await this.pendingRefresh;
   }
 
@@ -115,5 +137,7 @@ export class OAuthTokenAuth implements AuthStrategy {
     this.accessToken = null;
     this.expiresAt = 0;
     this.pendingRefresh = null;
+    this.lastFailureAt = 0;
+    this.lastFailureError = null;
   }
 }

@@ -46,7 +46,7 @@ export class WebhookRateLimiter {
       this.windows.set(source, timestamps);
     }
 
-    while (timestamps.length > 0 && timestamps[0] <= cutoff) {
+    while (timestamps.length > 0 && timestamps[0] < cutoff) {
       timestamps.shift();
     }
 
@@ -64,7 +64,7 @@ export class WebhookRateLimiter {
     const cutoff = now - this.windowMs;
     const timestamps = this.windows.get(source);
     if (!timestamps) return 0;
-    while (timestamps.length > 0 && timestamps[0] <= cutoff) {
+    while (timestamps.length > 0 && timestamps[0] < cutoff) {
       timestamps.shift();
     }
     return timestamps.length;
@@ -80,7 +80,7 @@ export class WebhookRateLimiter {
     const cutoff = now - this.windowMs;
     let pruned = 0;
     for (const [source, timestamps] of this.windows.entries()) {
-      while (timestamps.length > 0 && timestamps[0] <= cutoff) {
+      while (timestamps.length > 0 && timestamps[0] < cutoff) {
         timestamps.shift();
       }
       if (timestamps.length === 0) {

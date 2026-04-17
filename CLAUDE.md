@@ -63,7 +63,7 @@ _bmad-output/       # BMAD generated artifacts (PRDs, stories, etc.)
 - **Colors**: Navy `#1a174d` (primary), Blue `#1d87c8` (accent), Dark `#101218` (footer)
 - **Font**: Poppins (Google Fonts)
 - **Layout**: Sticky header + flex main + footer on all dashboard pages
-- See `docs/dashboard-ui-standards.md` for full standards
+- See [_bmad-output/ui-ux-standards.md](_bmad-output/ui-ux-standards.md) for full standards
 
 ## Environment Variables (Required)
 All 28 vars must be set in Render dashboard (`sync: false`). `CBL_SUPABASE_SCHEMA` is hardcoded in `render.yaml`.
@@ -133,22 +133,27 @@ This project has all 6 BMAD modules installed:
 
 100 skills available in \`.claude/skills/\`. Use \`/bmad-help\` to get started.
 
-## Current Project Status (as of 2026-04-13)
+## Current Project Status (as of 2026-04-17)
 
-**Epic 1 — Foundation & Platform**: ✅ DONE (12/12 stories)  
-**Epic 2 — Candidate Data Ingestion**: 🔄 IN-PROGRESS (10/11 done — story 2-7 scheduler backlog)  
-**Epics 3–9**: ⬜ BACKLOG (39 stories remaining)  
+**Epic 1 — Foundation & Platform**: 🔄 IN-PROGRESS (reopened for provider framework — 1.12a done, 1.12b/c backlog)
+**Epic 2 — Candidate Data Ingestion**: ✅ DONE (13/13 stories, retro complete, 430 tests)
+**Epics 3–9**: ⬜ BACKLOG
 
-Next story: **2-7 — Global Scheduler Control Plane**  
-Full status: see \`PROJECT_STATUS.md\`
+Next story: **1-12b — Migrate Graph + Anthropic to Provider Framework** (or **1-12c — Migrate Supabase**)
+Full status: see [_bmad-output/sprint-status.yaml](_bmad-output/sprint-status.yaml).
 
 ### Key Artifact Paths
 | Artifact | Location |
 |----------|----------|
-| Stories (24) | `_bmad-output/stories/` |
-| Epics / PRD / Architecture | \`_bmad-output/\` |
-| BMAD agents & workflows | \`_bmad/\` |
-| Sprint status | \`_bmad-output/sprint-status.yaml\` |
+| Stories | [_bmad-output/stories/](_bmad-output/stories/) |
+| Epics index | [_bmad-output/epics.md](_bmad-output/epics.md) (navigation only; ACs live in story files) |
+| PRD | [_bmad-output/prd.md](_bmad-output/prd.md) (condensed; full at `prd.full.md`) |
+| Architecture | [_bmad-output/architecture.md](_bmad-output/architecture.md) (condensed; full at `architecture.full.md`) |
+| Development standards | [_bmad-output/development-standards.md](_bmad-output/development-standards.md) |
+| UI/UX standards | [_bmad-output/ui-ux-standards.md](_bmad-output/ui-ux-standards.md) (merged from prior ux-design-spec + dashboard-ui-standards) |
+| DB schema | [supabase/schema.sql](supabase/schema.sql) (current-state bootstrap) + [supabase/migrations/](supabase/migrations/) (append-only history) |
+| BMAD agents & workflows | `_bmad/` |
+| Sprint status | [_bmad-output/sprint-status.yaml](_bmad-output/sprint-status.yaml) |
 
 ## Deployment Notes
 - **Render**: Set all `CBL_*` env vars in Render service settings. Set `CBL_APP_URL` to Render URL. Redeploy after changes.

@@ -384,7 +384,18 @@ export async function GET() {
  * that the receiver's `extractEvents` can't natively express.
  */
 function isRecognizedClayShape(body: unknown): boolean {
-  if (Array.isArray(body)) return true;
+  // Review patch L-2: reject arrays whose entries are all empty arrays
+  // (e.g. `[[]]`) — these parse cleanly but extract zero rows and surfaced
+  // as silent empty-batch responses. Explicitly reject so operators get the
+  // UNRECOGNIZED_SHAPE 400 instead.
+  if (Array.isArray(body)) {
+    if (body.length === 0) return true; // empty batch — valid, Clay sends these
+    const allEmptyArrays = body.every(
+      (entry) => Array.isArray(entry) && entry.length === 0,
+    );
+    if (allEmptyArrays) return false;
+    return true;
+  }
   if (body && typeof body === 'object') return true;
   return false;
 }

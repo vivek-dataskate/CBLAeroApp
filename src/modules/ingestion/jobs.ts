@@ -1,5 +1,5 @@
 import { fetchCeipalApplicants, mapCeipalApplicantToCandidate, getCeipalCreatedOn } from '../ats';
-import { ensureProvidersInitialized } from '../providers';
+import { ensureProvidersInitialized, getProviderRegistry } from '../providers';
 import { MicrosoftGraphEmailParser } from '../email';
 import { acquireGraphToken } from '../email/graph-auth';
 import { getSupabaseAdminClient, isSupabaseConfigured } from '../persistence';
@@ -111,6 +111,19 @@ export class CeipalIngestionJob implements SchedulerJob {
         );
       }
 
+      // Review patch H-4: honor the kill-switch mode restored from
+      // provider_routing_policies. Previously the restored `mode` was
+      // observability-only — this check makes architecture.md §19 real by
+      // refusing outbound traffic when an operator (or auto-trigger) has
+      // flipped Ceipal to kill_switched.
+      const ceipalMode = getProviderRegistry().getMode('ceipal');
+      if (ceipalMode === 'kill_switched') {
+        const reason = 'provider_routing_policies.mode=kill_switched';
+        console.warn(`[CeipalIngestionJob] Skipping run — ${reason}`);
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
       const startPage = params?.startPage ?? 1;
       const maxPages = params?.maxPages ?? 50;
 
@@ -148,7 +161,10 @@ export class CeipalIngestionJob implements SchedulerJob {
           })
           .filter((h): h is string => h !== null);
 
-        const existing = await checkExistingFingerprints(DEFAULT_TENANT_ID, 'ats_external_id', pageHashes);
+        // Review patch M-7: Ceipal fingerprints are now namespaced under
+        // `ceipal_applicant_id`. Existing rows were backfilled by the
+        // 2026-04-17 hardening migration.
+        const existing = await checkExistingFingerprints(DEFAULT_TENANT_ID, 'ceipal_applicant_id', pageHashes);
 
         const newCandidates = candidates.filter((c) => {
           const ceipalId = (c as Record<string, unknown>).ceipalId as string | undefined;
@@ -175,7 +191,7 @@ export class CeipalIngestionJob implements SchedulerJob {
             .filter((c) => (c as Record<string, unknown>).ceipalId)
             .map((c) => ({
               tenantId: DEFAULT_TENANT_ID,
-              type: 'ats_external_id' as const,
+              type: 'ceipal_applicant_id' as const,
               hash: `ceipal:${(c as Record<string, unknown>).ceipalId}`,
               source: 'ceipal' as const,
             }));
