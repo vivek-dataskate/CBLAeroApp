@@ -37,10 +37,25 @@ export const DEFAULT_TENANT_ID = 'cbl-aero';
 // --- Candidate upsert (real Supabase persistence) ---
 
 /**
+ * Minimum shape every `batchUpsertCandidatesFromATS` caller must pass.
+ * Review patch L-5: catches silent data loss from callers that mistakenly
+ * pass snake_case (e.g., raw `CeipalApplicant`) — `mapToCandidateRow` reads
+ * camelCase keys, so any key mismatch used to persist as NULL without error.
+ */
+export interface CandidateUpsertRecord extends Record<string, unknown> {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  source?: string;
+  sourceRecruiterActorId?: string;
+}
+
+/**
  * Batch upsert candidates from ATS. Uses repository functions for DB access.
  * Much faster than individual inserts for bulk loads.
  */
-export async function batchUpsertCandidatesFromATS(records: Record<string, unknown>[]): Promise<{ inserted: number; failed: number }> {
+export async function batchUpsertCandidatesFromATS(records: CandidateUpsertRecord[]): Promise<{ inserted: number; failed: number }> {
   if (!isSupabaseConfigured() || records.length === 0) return { inserted: 0, failed: 0 };
 
   let failed = 0;

@@ -68,44 +68,81 @@ export class ClayInRequestStore implements WebhookEventStore, WebhookProcessorSt
 
   async markCompleted(eventId: string, result?: WebhookHandlerResult): Promise<void> {
     this.results.set(eventId, { status: 'completed', result });
-    await this.updateRow(eventId, 'update-completed', {
+    await this.upsertTerminal(eventId, 'update-completed', {
       status: 'completed',
       processed_at: new Date().toISOString(),
       result_meta: result?.meta ?? null,
     });
   }
 
-  async markFailed(eventId: string, errorMessage: string, attemptCount: number): Promise<void> {
+  async markFailed(
+    eventId: string,
+    errorMessage: string,
+    attemptCount: number,
+    nextAttemptAt?: Date,
+  ): Promise<void> {
     this.results.set(eventId, { status: 'failed', error: errorMessage });
-    await this.updateRow(eventId, 'update-failed', {
+    await this.upsertTerminal(eventId, 'update-failed', {
       status: 'failed',
       attempt_count: attemptCount,
       error_message: errorMessage,
+      next_attempt_at: nextAttemptAt?.toISOString() ?? null,
     });
   }
 
   async markDeadLetter(eventId: string, errorMessage: string): Promise<void> {
     this.results.set(eventId, { status: 'dead_letter', error: errorMessage });
-    await this.updateRow(eventId, 'update-dead-letter', {
+    await this.upsertTerminal(eventId, 'update-dead-letter', {
       status: 'dead_letter',
       error_message: errorMessage,
       processed_at: new Date().toISOString(),
     });
   }
 
-  private async updateRow(
+  /**
+   * Review patch M-5: write terminal rows via UPDATE then, if that fails,
+   * fall back to UPSERT so a row with no prior `insertIfNotDuplicate`
+   * (e.g., insert returned a transient 5xx that best-effort swallowed) still
+   * lands in the terminal state instead of being stuck at `pending` forever.
+   */
+  private async upsertTerminal(
     eventId: string,
     op: string,
     patch: Record<string, unknown>,
   ): Promise<void> {
+    const sb = this.supabase;
+    if (!sb) return;
+    const event = this.eventsById.get(eventId);
+
     await this.bestEffort(op, async () => {
-      const sb = this.supabase;
-      if (!sb) return;
       const builder = sb.from('webhook_events') as unknown as {
-        update?: (row: Record<string, unknown>) => { eq: (col: string, val: string) => Promise<unknown> };
+        update?: (row: Record<string, unknown>) => {
+          eq: (col: string, val: string) => Promise<{ data?: unknown; error?: { message?: string } | null; count?: number | null }>;
+        };
+        upsert?: (row: Record<string, unknown>) => Promise<{ error?: { message?: string } | null }>;
       };
       if (typeof builder.update !== 'function') return;
-      await builder.update(patch).eq('id', eventId);
+      const updateResp = await builder.update(patch).eq('id', eventId);
+      const updateErr = (updateResp as { error?: { message?: string } | null })?.error;
+      if (!updateErr) return;
+
+      // Fallback upsert — ensures we never strand a terminal event because
+      // the earlier insert was swallowed (bestEffort). Requires `id` PK.
+      if (typeof builder.upsert !== 'function' || !event) {
+        throw new Error(updateErr.message ?? 'update failed and no upsert fallback available');
+      }
+      const upsertResp = await builder.upsert({
+        id: event.id,
+        source: event.source,
+        event_type: event.eventType,
+        provider_event_id: event.providerEventId,
+        raw_payload: event.rawPayload,
+        attempt_count: event.attemptCount,
+        created_at: event.createdAtIso,
+        ...patch,
+      });
+      const upsertErr = upsertResp?.error;
+      if (upsertErr) throw new Error(upsertErr.message ?? 'upsert fallback failed');
     });
   }
 

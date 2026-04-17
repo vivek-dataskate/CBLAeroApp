@@ -13,7 +13,11 @@ export type FingerprintType =
   | "email_message_id"
   | "csv_row_hash"
   | "ats_external_id"
-  | "candidate_identity";
+  | "candidate_identity"
+  // Review patch M-7: per-provider namespace so Clay + Ceipal don't share
+  // `ats_external_id`. Old rows remain queryable under the legacy type.
+  | "clay_profile_id"
+  | "ceipal_applicant_id";
 
 export type FingerprintSource =
   | "email"

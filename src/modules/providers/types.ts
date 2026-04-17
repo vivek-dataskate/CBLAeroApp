@@ -254,10 +254,47 @@ export interface WebhookReceiverConfig {
 /*  Webhook Handler                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Canonical shape persisted to `webhook_events.result_meta`.
+ *
+ * Review patch M-6: previously `WebhookHandlerResult.meta` was
+ * `Record<string, unknown>`, letting each handler shape `result_meta`
+ * however it liked. The Story 2-4b admin drill-down and any future cross-
+ * provider query needs a shared contract. This interface is the minimum
+ * surface every handler MUST emit; handler-specific extras live in
+ * `extra`.
+ */
+export interface WebhookResultMeta {
+  /** sync_runs.id or hourly-bucket UUID that owns this event. */
+  syncRunId: string | null;
+  /** Terminal processing outcome of the row (for UI + analytics filters). */
+  outcome:
+    | 'inserted'
+    | 'updated'
+    | 'skipped_duplicate'
+    | 'skipped_no_identity'
+    | 'skipped_fingerprint'
+    | 'error';
+  /** Candidate row id if the handler was able to surface it (may be null). */
+  candidateId?: string | null;
+  /** Short status summary ('accepted' / 'skipped' / 'error') for UI badges. */
+  rowStatus?: 'accepted' | 'skipped' | 'error';
+  /** Fingerprint hash the handler computed — linked to `content_fingerprints`. */
+  fingerprint?: string;
+  /** Error message when outcome='error'. */
+  error?: string;
+  /** Handler-specific extension data (any provider-specific fields). */
+  extra?: Record<string, unknown>;
+}
+
 /** Result returned by a webhook handler — stored with the event row for traceability. */
 export interface WebhookHandlerResult {
-  /** Free-form metadata the handler wants stored (candidate_id, bucket_run_id, per-row outcomes, etc.). */
-  meta?: Record<string, unknown>;
+  /**
+   * Metadata the handler wants stored on the event row. New handlers should
+   * populate this with a `WebhookResultMeta` shape so downstream consumers
+   * (2-4b admin drill-down) can filter / join on known fields.
+   */
+  meta?: WebhookResultMeta | Record<string, unknown>;
   /** Optional human-readable summary ("upserted 42 candidates, skipped 8"). */
   summary?: string;
 }

@@ -23,8 +23,18 @@ export interface WebhookProcessorStore {
    */
   markCompleted(eventId: string, result?: WebhookHandlerResult): Promise<void>;
 
-  /** Mark event failed; will be retried on next batch tick. */
-  markFailed(eventId: string, errorMessage: string, attemptCount: number): Promise<void>;
+  /**
+   * Mark event failed; will be retried on the next batch tick after
+   * `nextAttemptAt` has elapsed. If `nextAttemptAt` is undefined the store
+   * MAY treat the event as immediately re-claimable (legacy behavior); new
+   * stores should persist the timestamp and have `claimBatch` filter by it.
+   */
+  markFailed(
+    eventId: string,
+    errorMessage: string,
+    attemptCount: number,
+    nextAttemptAt?: Date,
+  ): Promise<void>;
 
   /** Mark event permanently failed — exhausted retries. */
   markDeadLetter(eventId: string, errorMessage: string): Promise<void>;
@@ -114,12 +124,18 @@ export class WebhookProcessor {
         });
         this.onEventRejected();
       } else {
-        await this.store.markFailed(event.id, errorMessage, nextAttempt);
+        // Review patch M-4: schedule the next attempt via getBackoffMs so a
+        // next_attempt_at-aware store enforces exponential backoff. Legacy
+        // stores that ignore the 4th arg continue to re-claim immediately
+        // (back-compat), but the contract now passes the timestamp.
+        const nextAttemptAt = new Date(Date.now() + this.getBackoffMs(nextAttempt));
+        await this.store.markFailed(event.id, errorMessage, nextAttempt, nextAttemptAt);
         this.onLog('Event processing failed, will retry', {
           source: event.source,
           eventId: event.id,
           attempt: nextAttempt,
           maxRetries: this.maxRetries,
+          nextAttemptAt: nextAttemptAt.toISOString(),
           error: errorMessage,
           stack,
         });

@@ -15,21 +15,32 @@ import { getSupabaseAdminClient, isSupabaseConfigured } from '@/modules/persiste
 import { DEFAULT_TENANT_ID } from '@/modules/ingestion';
 
 const ASSIGNEE_CACHE_TTL_MS = 60 * 60 * 1000;
+// Review patch M-14: errors were cached without a TTL, so a transient
+// configuration blip (operator hadn't yet provisioned the user) permanently
+// bricked the route until redeploy. Now errors expire after 5 minutes, so
+// fixing the underlying issue auto-recovers without restart.
+const ASSIGNEE_ERROR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let cachedAssigneeUserId: string | null = null;
 let cachedAssigneeUserIdAt: number = 0;
 let cachedAssigneeError: string | null = null;
+let cachedAssigneeErrorAt: number = 0;
 
 export async function resolveDefaultAssignee(): Promise<{ userId: string | null; error: string | null }> {
   const now = Date.now();
   if (cachedAssigneeUserId && now - cachedAssigneeUserIdAt < ASSIGNEE_CACHE_TTL_MS) {
     return { userId: cachedAssigneeUserId, error: null };
   }
-  if (cachedAssigneeError) return { userId: null, error: cachedAssigneeError };
+  if (cachedAssigneeError && now - cachedAssigneeErrorAt < ASSIGNEE_ERROR_CACHE_TTL_MS) {
+    return { userId: null, error: cachedAssigneeError };
+  }
+  // TTL expired — clear and re-resolve below.
+  cachedAssigneeError = null;
 
   const email = process.env.CLAY_DEFAULT_ASSIGNEE_EMAIL;
   if (!email) {
     cachedAssigneeError = 'CLAY_DEFAULT_ASSIGNEE_EMAIL env var is not set';
+    cachedAssigneeErrorAt = now;
     return { userId: null, error: cachedAssigneeError };
   }
 
@@ -55,7 +66,8 @@ export async function resolveDefaultAssignee(): Promise<{ userId: string | null;
     if (!data?.actor_id) {
       cachedAssigneeError =
         `Assignee user ${email} not found in tenant ${DEFAULT_TENANT_ID}. ` +
-        `Provision via admin console (Story 1.4) then restart the process.`;
+        `Provision via admin console (Story 1.4); route auto-recovers within 5 min.`;
+      cachedAssigneeErrorAt = now;
       return { userId: null, error: cachedAssigneeError };
     }
     cachedAssigneeUserId = data.actor_id as string;
@@ -74,4 +86,5 @@ export function resetClayAssigneeCacheForTests(): void {
   cachedAssigneeUserId = null;
   cachedAssigneeUserIdAt = 0;
   cachedAssigneeError = null;
+  cachedAssigneeErrorAt = 0;
 }

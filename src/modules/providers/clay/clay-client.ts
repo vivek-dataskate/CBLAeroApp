@@ -17,6 +17,7 @@ import {
   BaseProviderClient,
 } from '../index';
 import type { ProviderCallResult, ProviderLogEntry } from '../types';
+import { getProviderRegistry } from '../startup';
 
 /**
  * Shape of the profile pushed to Clay for enrichment. The concrete fields
@@ -79,6 +80,19 @@ export class ClayProviderClient {
   async pushCandidateForEnrichment(
     profile: ClayOutboundProfile,
   ): Promise<ProviderCallResult<{ id?: string }>> {
+    // Review patch H-4: refuse outbound traffic when kill-switched.
+    // Architecture §19: kill-switched providers must not send new requests.
+    if (getProviderRegistry().getMode('clay-outbound') === 'kill_switched') {
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        errorClassification: 'permanent',
+        durationMs: 0,
+        attempt: 0,
+        error: 'clay-outbound is kill_switched — request refused',
+      };
+    }
     return this.base.request<{ id?: string }>(
       'POST',
       '/v1/enrichment/person',

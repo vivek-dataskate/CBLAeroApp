@@ -127,7 +127,7 @@ export class CeipalProviderClient<TApplicant = CeipalApplicantMinimal> {
         // 55-minute refresh buffer as valid and wedges the client until
         // process restart.
         if (result.status === 401) {
-          this.auth.clearCacheForTest();
+          this.auth.invalidateCache();
         }
         throw new Error(
           `Ceipal fetch failed on page ${page} (${result.status}): ${result.error ?? 'unknown error'}`,
@@ -135,9 +135,14 @@ export class CeipalProviderClient<TApplicant = CeipalApplicantMinimal> {
       }
 
       const data = result.data;
+      // Review patch M-9: explicitly recognize `null` as "empty body" —
+      // Ceipal's end-of-pagination ack returns HTTP 200 with empty body,
+      // which `safeParseJson` surfaces as `null`. Without this, every
+      // successful exhausted-pagination response triggered the F8 warning.
       const isRecognizedShape =
+        data === null ||
         Array.isArray(data) ||
-        (data !== null && typeof data === 'object' && Array.isArray((data as { results?: unknown }).results));
+        (typeof data === 'object' && Array.isArray((data as { results?: unknown }).results));
       const results: TApplicant[] = Array.isArray(data)
         ? data
         : ((data as { results?: TApplicant[] } | null)?.results ?? []);

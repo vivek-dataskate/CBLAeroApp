@@ -20,16 +20,17 @@
 import {
   getSharedCeipalClient,
   clearCeipalTokenCacheForTest as _clearCeipalTokenCacheForTest,
-  setSharedCeipalClient,
-  resetSharedCeipalClientForTest,
 } from '@/modules/providers/ceipal';
 import type { CeipalApplicant } from './ceipal-types';
 
 export type { CeipalApplicant };
-export {
-  setSharedCeipalClient,
-  resetSharedCeipalClientForTest,
-};
+
+// Review patch M-12: `setSharedCeipalClient` and `resetSharedCeipalClientForTest`
+// are provider-framework internals — they used to be re-exported here for
+// test-setup convenience. Exposing them on the production ATS module surface
+// let any caller swap the singleton mid-run and bypass startup wiring. Import
+// them directly from `@/modules/providers/ceipal` in tests that still need
+// the low-level reset.
 
 /**
  * Fetch all applicants from Ceipal with pagination.

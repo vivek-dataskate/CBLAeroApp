@@ -222,7 +222,7 @@ describe('Clay webhook audit integration (AC 6 item 15)', () => {
     // ── content_fingerprints contract ──
     expect(fingerprintMocks.recordFingerprint).toHaveBeenCalledTimes(1);
     expect(fingerprintMocks.recordFingerprint).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'ats', type: 'ats_external_id' }),
+      expect.objectContaining({ source: 'ats', type: 'clay_profile_id' }),
     );
 
     // ── sync_errors contract ──

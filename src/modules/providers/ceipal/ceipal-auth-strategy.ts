@@ -180,9 +180,22 @@ export class CeipalAuthStrategy implements AuthStrategy {
     );
   }
 
-  /** Exposed for tests — resets cache so the next call forces a refresh. */
-  clearCacheForTest(): void {
+  /**
+   * Invalidate the cached token so the next `applyAuth` forces a refresh.
+   * Used both by the 401 recovery path in `CeipalProviderClient.fetchApplicants`
+   * (mid-run token revocation) and by test cleanup.
+   *
+   * Review patch M-10: renamed from `clearCacheForTest` now that a production
+   * caller exists; the old name is kept as a deprecated alias so test imports
+   * don't need a rename sweep.
+   */
+  invalidateCache(): void {
     this.cache = null;
     this.pendingRefresh = null;
+  }
+
+  /** @deprecated — review patch M-10 renamed this to `invalidateCache`. */
+  clearCacheForTest(): void {
+    this.invalidateCache();
   }
 }

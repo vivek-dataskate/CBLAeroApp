@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, getHashes, timingSafeEqual } from 'crypto';
 import type { WebhookAuthStrategy } from './types';
 
 /** Case-insensitive header lookup. */
@@ -57,6 +57,13 @@ export class HmacSignatureWebhookAuth implements WebhookAuthStrategy {
   ) {
     if (!secret || secret.length === 0) {
       throw new Error('HmacSignatureWebhookAuth: secret must be non-empty');
+    }
+    // Review patch L-1: fail loudly at construction on invalid algorithm
+    // rather than per-request with a cryptic TypeError from crypto.createHmac.
+    if (!getHashes().includes(algorithm)) {
+      throw new Error(
+        `HmacSignatureWebhookAuth: unknown algorithm "${algorithm}" (supported: see crypto.getHashes())`,
+      );
     }
   }
 

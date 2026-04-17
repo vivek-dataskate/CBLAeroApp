@@ -253,7 +253,7 @@ describe('POST /api/webhooks/clay — fingerprint gate', () => {
     await POST(makeRequest(SAMPLE_ROW) as never);
     expect(fingerprintMocks.recordFingerprint).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: 'ats_external_id',
+        type: 'clay_profile_id',
         source: 'ats',
       }),
     );
