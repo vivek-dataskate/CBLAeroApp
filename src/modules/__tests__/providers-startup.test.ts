@@ -17,11 +17,22 @@ import {
   resetProvidersForTest,
 } from '@/modules/providers/startup';
 import { resetSharedCeipalClientForTest } from '@/modules/providers/ceipal';
+import { resetSharedGraphClientForTest } from '@/modules/providers/graph';
+import {
+  resetLLMProviderForTest,
+  setLLMProvider,
+  getLLMProvider,
+  clearClientForTest,
+} from '@/modules/ai';
+import type { LLMProvider } from '@/modules/ai';
 
 describe('ensureProvidersInitialized', () => {
   beforeEach(() => {
     resetProvidersForTest();
     resetSharedCeipalClientForTest();
+    resetSharedGraphClientForTest();
+    resetLLMProviderForTest();
+    clearClientForTest();
     // Clear env vars so each test asserts a deterministic starting state.
     delete process.env.CLAY_API_KEY;
     delete process.env.CLAY_API_BASE_URL;
@@ -29,11 +40,19 @@ describe('ensureProvidersInitialized', () => {
     delete process.env.CEIPAL_USERNAME;
     delete process.env.CEIPAL_PASSWORD;
     delete process.env.CEIPAL_ENDPOINT_KEY;
+    // Story 1.12b additions: Graph + Anthropic env.
+    delete process.env.CBL_SSO_ALLOWED_TENANT_ID;
+    delete process.env.CBL_SSO_CLIENT_ID;
+    delete process.env.CBL_SSO_CLIENT_SECRET;
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   afterEach(() => {
     resetProvidersForTest();
     resetSharedCeipalClientForTest();
+    resetSharedGraphClientForTest();
+    resetLLMProviderForTest();
+    clearClientForTest();
     vi.restoreAllMocks();
   });
 
@@ -83,5 +102,45 @@ describe('ensureProvidersInitialized', () => {
     // `clay` is registered exactly once — all other subsequent calls no-op.
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith('clay');
+  });
+
+  it('registers graph provider when Entra SSO env is configured (Story 1.12b)', async () => {
+    process.env.CBL_SSO_ALLOWED_TENANT_ID = 't';
+    process.env.CBL_SSO_CLIENT_ID = 'c';
+    process.env.CBL_SSO_CLIENT_SECRET = 's';
+
+    const registry = new ProviderRegistry();
+    await ensureProvidersInitialized({ registry, skipDb: true });
+
+    const names = registry.listProviders().map((p) => p.name).sort();
+    expect(names).toContain('graph');
+    expect(registry.getMode('graph')).toBe('normal');
+  });
+
+  it('registers anthropic provider when ANTHROPIC_API_KEY is set (Story 1.12b)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+
+    const registry = new ProviderRegistry();
+    await ensureProvidersInitialized({ registry, skipDb: true });
+
+    const names = registry.listProviders().map((p) => p.name).sort();
+    expect(names).toContain('anthropic');
+    expect(registry.getMode('anthropic')).toBe('normal');
+  });
+
+  it('preserves a test-injected LLMProvider mock across ensureProvidersInitialized (review patch 7)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    const mock: LLMProvider = {
+      name: 'test-mock',
+      call: vi.fn().mockResolvedValue(null),
+    };
+    setLLMProvider(mock);
+
+    const registry = new ProviderRegistry();
+    await ensureProvidersInitialized({ registry, skipDb: true });
+
+    // Startup used `initializeLLMProviderFromStartup` which is a no-op when a
+    // provider was already injected — mock wins.
+    expect(getLLMProvider()).toBe(mock);
   });
 });

@@ -29,6 +29,15 @@ import {
 } from './ceipal';
 import type { CeipalProviderClient } from './ceipal/ceipal-client';
 import type { CeipalApplicant } from '@/modules/ats/ceipal-types';
+import {
+  buildGraphProviderClientFromEnv,
+  setSharedGraphClient,
+} from './graph';
+import {
+  buildAnthropicLLMProvider,
+  initializeLLMProviderFromStartup,
+} from '@/modules/ai';
+import { emitProviderAdminAlert } from './admin-alert';
 import type { BaseProviderClient } from './base-client';
 import type { ProviderLogEntry } from './types';
 import { isSupabaseConfigured, getSupabaseAdminClient } from '@/modules/persistence';
@@ -128,6 +137,31 @@ async function initializeImpl(
     setSharedCeipalClient(ceipalClient);
   }
 
+  // 1d. Microsoft Graph outbound (Story 1.12b). Registered only when Entra
+  //     SSO credentials are configured — the SAME app registration that SSO
+  //     uses, since email/OneDrive/sendMail all run against the tenant.
+  const graphClient = buildGraphProviderClientFromEnv();
+  if (graphClient) {
+    safeRegister(registry, 'graph');
+    registry.wireClient('graph', graphClient.base);
+    attachProviderLogSink(graphClient.base);
+    setSharedGraphClient(graphClient);
+  }
+
+  // 1e. Anthropic LLM (Story 1.12b). Unlike Graph/Clay/Ceipal, Anthropic
+  //     goes through the vendor SDK, not `BaseProviderClient` — so the
+  //     provider is registered but NOT `wireClient`'d. Instead,
+  //     `AnthropicLLMProvider.call()` invokes `registry.recordSuccess/
+  //     recordFailure` directly. This keeps the SDK's retry/streaming
+  //     semantics intact while still feeding health.
+  const anthropicProvider = buildAnthropicLLMProvider();
+  if (anthropicProvider) {
+    safeRegister(registry, 'anthropic');
+    // Initialize-only: preserve any test-injected mock already set via
+    // `setLLMProvider()` in a test's `beforeEach` (review patch E7).
+    initializeLLMProviderFromStartup(anthropicProvider);
+  }
+
   if (options?.skipDb || !isSupabaseConfigured() || dbWiringComplete) return;
 
   // ── 2. Wire PostgresHealthEventStore ──
@@ -152,6 +186,9 @@ async function initializeImpl(
     if (error) throw new Error(error.message);
   });
   registry.onHealthEvent = (event) => {
+    // Fan out to all observability sinks. Each sink is independent — one
+    // failure does not block the others. Critical log + admin email (AC 1
+    // bullet 4, Story 1.12b) run alongside DB persistence.
     void store.persist(event).then((r) => {
       if (!r.ok) {
         console.error('[health-event-store] persist failed', r.error, {
@@ -160,6 +197,9 @@ async function initializeImpl(
           newMode: event.newMode,
         });
       }
+    });
+    void emitProviderAdminAlert(event).catch((err) => {
+      console.error('[provider-admin-alert] dispatch threw', err);
     });
   };
 

@@ -1,75 +1,37 @@
-import { fetchWithRetry } from '../ingestion/fetch-with-retry';
-
 /**
  * Microsoft Graph client credentials token acquisition.
- * Uses the same Azure app registration as SSO (CBL_SSO_* env vars).
- * Requires Mail.ReadShared (or Mail.Read) application permission granted in Azure AD.
+ *
+ * Story 1.12b: the token cache + `fetch` call has moved onto the
+ * provider framework. `acquireGraphToken()` now delegates to the shared
+ * `GraphProviderClient`'s `OAuthTokenAuth` strategy, which:
+ *   - caches the access token with a 60s pre-expiry buffer,
+ *   - coalesces concurrent refresh attempts,
+ *   - cools down after IdP failures (30s) to prevent refresh storms,
+ *   - invalidates the cache on 401 (handled inside `GraphProviderClient.request`).
+ *
+ * This wrapper exists to keep the one remaining legacy caller
+ * (`OneDriveResumePollerJob`, which must sign non-Graph signed URLs with the
+ * same bearer) working without each caller learning about the client API.
+ * Net-new code should prefer `getSharedGraphClient().request(...)` instead.
  */
-
-type TokenCache = {
-  accessToken: string;
-  expiresAt: number;
-};
-
-// Module-level cache: resets on serverless cold starts (acceptable — re-auth is cheap)
-let tokenCache: TokenCache | null = null;
-
-function getGraphConfig() {
-  const tenantId = process.env.CBL_SSO_ALLOWED_TENANT_ID;
-  const clientId = process.env.CBL_SSO_CLIENT_ID;
-  const clientSecret = process.env.CBL_SSO_CLIENT_SECRET;
-
-  if (!tenantId || !clientId || !clientSecret) {
-    throw new Error(
-      'Microsoft Graph auth not configured. Required: CBL_SSO_ALLOWED_TENANT_ID, CBL_SSO_CLIENT_ID, CBL_SSO_CLIENT_SECRET'
-    );
-  }
-
-  return { tenantId, clientId, clientSecret };
-}
+import { getSharedGraphClient } from '../providers/graph';
 
 export async function acquireGraphToken(): Promise<string> {
-  // Return cached token if still valid (with 60s buffer)
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 60_000) {
-    return tokenCache.accessToken;
+  const client = getSharedGraphClient();
+  if (!client) {
+    throw new Error(
+      'Microsoft Graph auth not configured. Required: CBL_SSO_ALLOWED_TENANT_ID, CBL_SSO_CLIENT_ID, CBL_SSO_CLIENT_SECRET',
+    );
   }
-
-  const { tenantId, clientId, clientSecret } = getGraphConfig();
-
-  const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope: 'https://graph.microsoft.com/.default',
-  });
-
-  const response = await fetchWithRetry(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
-
-  if (!response.ok) {
-    // Parse only safe fields — do NOT log raw body (may contain tenant/client IDs)
-    let errorCode = 'unknown';
-    try {
-      const errData = await response.json() as { error?: string; error_description?: string };
-      errorCode = errData.error ?? `status_${response.status}`;
-    } catch { /* response not JSON */ }
-    throw new Error(`[Graph] Token acquisition failed (${response.status}): ${errorCode}`);
-  }
-
-  const data = await response.json() as { access_token: string; expires_in: number };
-
-  tokenCache = {
-    accessToken: data.access_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
-  };
-
-  return tokenCache.accessToken;
+  return client.getAccessToken();
 }
 
+/**
+ * Legacy test hook — invalidates the cached Graph token on the shared client.
+ * Preserved for existing tests; new tests should use
+ * `resetSharedGraphClientForTest()` from `@/modules/providers/graph`.
+ */
 export function clearGraphTokenCacheForTest(): void {
-  tokenCache = null;
+  const client = getSharedGraphClient();
+  client?.auth.invalidateCache();
 }

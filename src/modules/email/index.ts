@@ -1,6 +1,8 @@
-import { acquireGraphToken } from './graph-auth';
-import { extractCandidateFromEmail } from './nlp-extract-and-upload';
+import { getSharedGraphClient, DEFAULT_GRAPH_BASE_URL } from '../providers/graph';
+import type { GraphProviderClient } from '../providers/graph';
+import type { ProviderCallResult } from '../providers/types';
 import { fetchWithRetry } from '../ingestion/fetch-with-retry';
+import { extractCandidateFromEmail } from './nlp-extract-and-upload';
 
 export interface EmailParser {
   name: string;
@@ -38,6 +40,24 @@ type GraphAttachment = {
   '@odata.type': string;
 };
 
+function requireGraph(): GraphProviderClient {
+  const client = getSharedGraphClient();
+  if (!client) {
+    throw new Error(
+      'MicrosoftGraphEmailParser: Graph client not configured. Required: CBL_SSO_ALLOWED_TENANT_ID, CBL_SSO_CLIENT_ID, CBL_SSO_CLIENT_SECRET',
+    );
+  }
+  return client;
+}
+
+/**
+ * Decode an HTTP failure body from the Graph client into a short,
+ * caller-friendly error string. Only used for throw-path messages.
+ */
+function graphError(context: string, status: number, error: string | undefined): Error {
+  return new Error(`${context} (${status}): ${error ?? 'unknown error'}`);
+}
+
 export class MicrosoftGraphEmailParser implements EmailParser {
   name = 'MicrosoftGraph';
   // Cache folder IDs per mailbox to avoid repeated lookups
@@ -45,16 +65,16 @@ export class MicrosoftGraphEmailParser implements EmailParser {
   private errorFolderIds = new Map<string, string>();
 
   async parseInbox(addresses: string[], processedIds?: Set<string>): Promise<EmailCandidateRecord[]> {
-    const token = await acquireGraphToken();
+    const client = requireGraph();
     const allEmails: EmailCandidateRecord[] = [];
 
     for (const address of addresses) {
-      const messages = await this.fetchMessages(token, address);
+      const messages = await this.fetchMessages(client, address);
       for (const msg of messages) {
         // Skip already-processed messages — fingerprint safety net
         if (processedIds?.has(msg.id)) {
           // Already processed but still unread (edge case) — mark read now
-          await this.moveToProcessed(token, address, msg.id);
+          await this.moveToProcessed(client, address, msg.id);
           continue;
         }
 
@@ -63,12 +83,12 @@ export class MicrosoftGraphEmailParser implements EmailParser {
         // Skip non-submission emails (treat undefined isSubmission as non-submission too)
         if (!candidate.isSubmission) {
           console.log(`[EmailParser] Skipping non-submission: ${msg.subject ?? '(no subject)'}`);
-          await this.moveToProcessed(token, address, msg.id);
+          await this.moveToProcessed(client, address, msg.id);
           continue;
         }
 
         // Always attempt attachment fetch — hasAttachments can be false on forwarded/CC'd emails
-        const attachments = await this.fetchAttachments(token, address, msg.id);
+        const attachments = await this.fetchAttachments(client, address, msg.id);
         allEmails.push({
           id: msg.id,
           mailbox: address,
@@ -95,11 +115,11 @@ export class MicrosoftGraphEmailParser implements EmailParser {
     handler: (record: EmailCandidateRecord) => Promise<void>,
   ): Promise<{ processed: number; skipped: number; failed: number }> {
     const CONCURRENCY = 10;
-    const token = await acquireGraphToken();
+    const client = requireGraph();
     let processed = 0, skipped = 0, failed = 0;
 
     for (const address of addresses) {
-      const messages = await this.fetchMessages(token, address);
+      const messages = await this.fetchMessages(client, address);
       console.log(`[EmailParser] ${messages.length} unread messages in ${address} (concurrency: ${CONCURRENCY})`);
 
       // Process in chunks of CONCURRENCY
@@ -108,18 +128,18 @@ export class MicrosoftGraphEmailParser implements EmailParser {
         const results = await Promise.allSettled(
           chunk.map(async (msg) => {
             if (processedIds.has(msg.id)) {
-              await this.moveToProcessed(token, address, msg.id);
+              await this.moveToProcessed(client, address, msg.id);
               return 'skipped' as const;
             }
 
             const candidate = await extractCandidateFromEmail(msg.body.content, msg.subject ?? '');
             if (!candidate.isSubmission) {
               console.log(`[EmailParser] Skipping non-submission: ${msg.subject ?? '(no subject)'}`);
-              await this.moveToProcessed(token, address, msg.id);
+              await this.moveToProcessed(client, address, msg.id);
               return 'skipped' as const;
             }
 
-            const attachments = await this.fetchAttachments(token, address, msg.id);
+            const attachments = await this.fetchAttachments(client, address, msg.id);
             const record: EmailCandidateRecord = {
               id: msg.id,
               mailbox: address,
@@ -131,7 +151,7 @@ export class MicrosoftGraphEmailParser implements EmailParser {
             };
 
             await handler(record);
-            await this.moveToProcessed(token, address, msg.id);
+            await this.moveToProcessed(client, address, msg.id);
             return 'processed' as const;
           }),
         );
@@ -146,7 +166,7 @@ export class MicrosoftGraphEmailParser implements EmailParser {
             console.error(`[EmailParser] Failed to process ${chunk[j].subject ?? chunk[j].id}:`,
               result.reason instanceof Error ? result.reason.message : result.reason);
             // Move failed email to Error folder so it doesn't retry forever
-            await this.moveToError(token, address, chunk[j].id);
+            await this.moveToError(client, address, chunk[j].id);
           }
         }
 
@@ -158,41 +178,32 @@ export class MicrosoftGraphEmailParser implements EmailParser {
   }
 
   /** Mark as read + move to Inbox/Processed folder */
-  async moveToProcessed(token: string, mailbox: string, messageId: string): Promise<void> {
-    await this.moveToFolder(token, mailbox, messageId, 'Processed', this.processedFolderIds);
+  async moveToProcessed(client: GraphProviderClient, mailbox: string, messageId: string): Promise<void> {
+    await this.moveToFolder(client, mailbox, messageId, 'Processed', this.processedFolderIds);
   }
 
   /** Mark as read + move to Inbox/Error folder (prevents infinite retry) */
-  async moveToError(token: string, mailbox: string, messageId: string): Promise<void> {
-    await this.moveToFolder(token, mailbox, messageId, 'Error', this.errorFolderIds);
+  async moveToError(client: GraphProviderClient, mailbox: string, messageId: string): Promise<void> {
+    await this.moveToFolder(client, mailbox, messageId, 'Error', this.errorFolderIds);
   }
 
   private async moveToFolder(
-    token: string, mailbox: string, messageId: string,
+    client: GraphProviderClient, mailbox: string, messageId: string,
     folderName: string, cache: Map<string, string>,
   ): Promise<void> {
-    const userPath = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}`;
+    const userPath = `/users/${encodeURIComponent(mailbox)}`;
     try {
       // 1. Mark as read
-      const patchResp = await fetchWithRetry(`${userPath}/messages/${messageId}`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isRead: true }),
-      });
-      if (!patchResp.ok) {
-        console.warn(`[EmailParser] markAsRead FAILED (${patchResp.status})`);
+      const patchResult = await client.patch(`${userPath}/messages/${messageId}`, { isRead: true });
+      if (!patchResult.ok) {
+        console.warn(`[EmailParser] markAsRead FAILED (${patchResult.status})`);
       }
 
       // 2. Move to target folder
-      const folderId = await this.getOrCreateFolder(token, mailbox, folderName, cache);
-      const moveResp = await fetchWithRetry(`${userPath}/messages/${messageId}/move`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ destinationId: folderId }),
-      });
-      if (!moveResp.ok) {
-        const errText = await moveResp.text().catch(() => '');
-        console.warn(`[EmailParser] moveTo${folderName} FAILED (${moveResp.status}): ${errText.slice(0, 200)}`);
+      const folderId = await this.getOrCreateFolder(client, mailbox, folderName, cache);
+      const moveResult = await client.post<unknown>(`${userPath}/messages/${messageId}/move`, { destinationId: folderId });
+      if (!moveResult.ok) {
+        console.warn(`[EmailParser] moveTo${folderName} FAILED (${moveResult.status}): ${(moveResult.error ?? '').slice(0, 200)}`);
       } else {
         console.log(`[EmailParser] Moved to ${folderName}: ${messageId.slice(-10)}`);
       }
@@ -202,69 +213,79 @@ export class MicrosoftGraphEmailParser implements EmailParser {
   }
 
   private async getOrCreateFolder(
-    token: string, mailbox: string, folderName: string, cache: Map<string, string>,
+    client: GraphProviderClient, mailbox: string, folderName: string, cache: Map<string, string>,
   ): Promise<string> {
     const cached = cache.get(mailbox);
     if (cached) return cached;
 
-    const userPath = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}`;
+    const userPath = `/users/${encodeURIComponent(mailbox)}`;
 
     // Check if folder exists under Inbox
-    const listUrl = `${userPath}/mailFolders/Inbox/childFolders?$filter=displayName eq '${folderName}'`;
-    const listResp = await fetchWithRetry(listUrl, { headers: { Authorization: `Bearer ${token}` } });
+    const listPath = `${userPath}/mailFolders/Inbox/childFolders?$filter=displayName eq '${folderName}'`;
+    const listResult = await client.get<{ value: Array<{ id: string }> }>(listPath);
 
-    if (listResp.ok) {
-      const listData = await listResp.json() as { value: Array<{ id: string }> };
-      if (listData.value?.length > 0) {
-        cache.set(mailbox, listData.value[0].id);
-        console.log(`[EmailParser] Found existing "${folderName}" folder for ${mailbox}`);
-        return listData.value[0].id;
-      }
+    // Patch (review F1.12b): only fall through to folder-create when the
+    // list call SUCCEEDED with an empty result set. A transient list failure
+    // (429 / 5xx) used to fall through to create, risking duplicate folders
+    // in Exchange and a corrupt cache entry. If list fails, surface the
+    // error so the caller (moveToFolder) logs it and skips the move — the
+    // message stays in the inbox for the next poll cycle, which is the
+    // correct behavior for a transient issue.
+    if (!listResult.ok) {
+      throw graphError(
+        `Failed to list "${folderName}" folder candidates`,
+        listResult.status,
+        listResult.error,
+      );
+    }
+    if (listResult.data?.value?.length) {
+      const firstId = listResult.data.value[0].id;
+      cache.set(mailbox, firstId);
+      console.log(`[EmailParser] Found existing "${folderName}" folder for ${mailbox}`);
+      return firstId;
     }
 
-    // Create the folder
-    const createResp = await fetchWithRetry(`${userPath}/mailFolders/Inbox/childFolders`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ displayName: folderName }),
-    });
+    // List succeeded with zero results → folder genuinely does not exist yet.
+    const createResult = await client.post<{ id: string }>(
+      `${userPath}/mailFolders/Inbox/childFolders`,
+      { displayName: folderName },
+    );
 
-    if (!createResp.ok) {
-      const errText = await createResp.text().catch(() => '');
-      throw new Error(`Failed to create ${folderName} folder (${createResp.status}): ${errText.slice(0, 200)}`);
+    if (!createResult.ok || !createResult.data?.id) {
+      throw graphError(`Failed to create ${folderName} folder`, createResult.status, createResult.error);
     }
 
-    const createData = await createResp.json() as { id: string };
-    cache.set(mailbox, createData.id);
+    cache.set(mailbox, createResult.data.id);
     console.log(`[EmailParser] Created "${folderName}" folder for ${mailbox}`);
-    return createData.id;
+    return createResult.data.id;
   }
 
-  private async fetchMessages(token: string, mailbox: string): Promise<GraphMessage[]> {
+  private async fetchMessages(client: GraphProviderClient, mailbox: string): Promise<GraphMessage[]> {
     const MAX_PAGES = 10; // Safety cap: 10 pages × 50 = 500 messages max
-    let url: string | null = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/mailFolders/Inbox/messages` +
+    type MessagesPage = { value: GraphMessage[]; '@odata.nextLink'?: string };
+    let nextPath: string | null = `/users/${encodeURIComponent(mailbox)}/mailFolders/Inbox/messages` +
       `?$top=50&$filter=isRead eq false&$select=id,subject,receivedDateTime,body,hasAttachments&$orderby=receivedDateTime desc`;
 
     const allMessages: GraphMessage[] = [];
     let page = 0;
 
-    while (url && page < MAX_PAGES) {
-      const response = await fetchWithRetry(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Graph messages fetch failed for ${mailbox} (${response.status}): ${text}`);
+    while (nextPath && page < MAX_PAGES) {
+      const result: ProviderCallResult<MessagesPage> = await client.get<MessagesPage>(nextPath);
+      if (!result.ok) {
+        throw graphError(`Graph messages fetch failed for ${mailbox}`, result.status, result.error);
       }
-
-      const data = await response.json() as { value: GraphMessage[]; '@odata.nextLink'?: string };
-      allMessages.push(...(data.value ?? []));
-      url = data['@odata.nextLink'] ?? null;
+      const data: MessagesPage | null = result.data;
+      allMessages.push(...(data?.value ?? []));
+      // Treat empty string as end-of-pagination. Graph never emits an
+      // empty nextLink in practice, but misbehaving proxies/mocks can —
+      // and `nextPath = ""` would loop until MAX_PAGES silently (review
+      // finding E6).
+      const rawNext = data?.['@odata.nextLink'];
+      nextPath = rawNext && rawNext.length > 0 ? rawNext : null;
       page++;
     }
 
-    if (url) {
+    if (nextPath) {
       console.warn(`[EmailParser] MAX_PAGES (${MAX_PAGES}) reached for ${mailbox} — some messages may not have been processed`);
     }
 
@@ -272,24 +293,19 @@ export class MicrosoftGraphEmailParser implements EmailParser {
   }
 
   private async fetchAttachments(
-    token: string,
+    client: GraphProviderClient,
     mailbox: string,
-    messageId: string
+    messageId: string,
   ): Promise<Array<{ filename: string; content: Buffer }>> {
-    const userPath = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}`;
-    const url = `${userPath}/messages/${messageId}/attachments`;
+    const userPath = `/users/${encodeURIComponent(mailbox)}`;
+    const result = await client.get<{ value: GraphAttachment[] }>(`${userPath}/messages/${messageId}/attachments`);
 
-    const response = await fetchWithRetry(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!response.ok) {
-      console.warn(`[EmailParser] Attachments fetch failed for ${messageId.slice(-10)} (${response.status})`);
+    if (!result.ok) {
+      console.warn(`[EmailParser] Attachments fetch failed for ${messageId.slice(-10)} (${result.status})`);
       return [];
     }
 
-    const data = await response.json() as { value: GraphAttachment[] };
-    const allAtts = data.value ?? [];
+    const allAtts = result.data?.value ?? [];
     if (allAtts.length === 0) return [];
 
     const results: Array<{ filename: string; content: Buffer }> = [];
@@ -299,21 +315,52 @@ export class MicrosoftGraphEmailParser implements EmailParser {
         // File attachments have contentBytes inline
         results.push({ filename: att.name, content: Buffer.from(att.contentBytes, 'base64') });
       } else if (att['@odata.type'] === '#microsoft.graph.itemAttachment') {
-        // Item attachments (embedded emails) need a separate fetch for raw MIME content
+        // Item attachments (embedded emails) return raw MIME, not JSON.
+        // BaseProviderClient's `parseJson: false` mode discards the body
+        // since there's no binary consumer hook — fall back to a direct
+        // bearer-auth'd fetch. Retries + timeout still come from
+        // `fetchWithRetry`. Registry health IS NOT wired (no onSuccess/
+        // onFailure hook) — but the structured `provider_log` entry below
+        // fills AC 1 bullet 2's logging gap (review patch A2).
+        const itemStart = Date.now();
+        const itemPath = `${userPath}/messages/${messageId}/attachments/${att.id}/$value`;
+        const itemUrl = `${DEFAULT_GRAPH_BASE_URL}${itemPath}`;
+        let itemStatus: number | null = null;
+        let itemError: string | undefined;
         try {
-          const itemUrl = `${userPath}/messages/${messageId}/attachments/${att.id}/$value`;
+          const token = await client.getAccessToken();
           const itemResp = await fetchWithRetry(itemUrl, {
             headers: { Authorization: `Bearer ${token}` },
           });
+          itemStatus = itemResp.status;
           if (itemResp.ok) {
             const buf = Buffer.from(await itemResp.arrayBuffer());
             const safeName = (att.name || 'embedded-email').replace(/[^a-zA-Z0-9._-]/g, '_');
             results.push({ filename: `${safeName}.eml`, content: buf });
           } else {
+            itemError = `HTTP ${itemResp.status}`;
             console.warn(`[EmailParser] Item attachment fetch failed for ${att.name} (${itemResp.status})`);
           }
         } catch (err) {
-          console.warn(`[EmailParser] Item attachment fetch threw for ${att.name}:`, err instanceof Error ? err.message : err);
+          itemError = err instanceof Error ? err.message : String(err);
+          console.warn(`[EmailParser] Item attachment fetch threw for ${att.name}:`, itemError);
+        } finally {
+          // Emit a provider_log entry matching the shape BaseProviderClient
+          // writes, so log-drain dashboards can include this path in the
+          // graph-provider success/failure counts.
+          console.log(
+            JSON.stringify({
+              kind: 'provider_log',
+              provider: 'graph',
+              method: 'GET',
+              path: itemPath,
+              statusCode: itemStatus,
+              durationMs: Date.now() - itemStart,
+              attempt: 1,
+              error: itemError,
+              subPath: 'item-attachment-binary',
+            }),
+          );
         }
       }
     }
@@ -322,3 +369,4 @@ export class MicrosoftGraphEmailParser implements EmailParser {
     return results;
   }
 }
+

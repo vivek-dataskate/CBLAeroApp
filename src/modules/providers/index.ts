@@ -61,3 +61,16 @@ export {
   getProviderRegistry,
   resetProvidersForTest,
 } from './startup';
+
+// Graph (story 1-12b task 1)
+export {
+  GraphProviderClient,
+  buildGraphProviderClientFromEnv,
+  getSharedGraphClient,
+  setSharedGraphClient,
+  resetSharedGraphClientForTest,
+} from './graph';
+export type {
+  GraphProviderClientConfig,
+  GraphRequestOptions,
+} from './graph';

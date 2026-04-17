@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { callLlm } from '../ai/inference';
 import { clearClientForTest } from '../ai/client';
+import { resetLLMProviderForTest } from '../ai/llm-factory';
 
 const mockCreate = vi.fn();
 
@@ -24,13 +25,17 @@ function mockApiResponse(text: string, inputTokens = 50, outputTokens = 20) {
 
 describe('ai/inference — callLlm', () => {
   beforeEach(() => {
+    // Story 1.12b: `callLlm` now delegates to the factory-resolved LLMProvider.
+    // Reset both caches so each test starts from "no provider built yet".
     clearClientForTest();
+    resetLLMProviderForTest();
     vi.clearAllMocks();
     delete process.env.ANTHROPIC_API_KEY;
   });
 
   afterEach(() => {
     clearClientForTest();
+    resetLLMProviderForTest();
     delete process.env.ANTHROPIC_API_KEY;
   });
 
