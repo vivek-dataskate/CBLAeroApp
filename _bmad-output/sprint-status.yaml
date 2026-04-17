@@ -5,7 +5,7 @@
 # story_location: docs/implementation_artifacts/stories
 
 generated: 2026-03-11
-last_updated: 2026-04-17  # Story 1-12a DONE (PR A #97 + PR B #99 merged; review findings patched)
+last_updated: 2026-04-17  # Story 1-12b DONE (code review + 9 patches + decision resolved; 609 tests pass)
 project: CBLAero
 project_key: NOKEY
 tracking_system: file-system
@@ -69,7 +69,7 @@ development_status:
   1-11-implement-content-fingerprint-gate-for-all-ingestion-paths: done  # prerequisite for 2.5 dedup
   1-12-edge-system-provider-framework: done  # 2026-04-16: framework complete + 2 code reviews, 110 tests passing
   1-12a-migrate-clay-ceipal: done  # 2026-04-17: PR A #97 (Task 1) + PR B #99 (Tasks 2-5) merged to master; Opus 4-layer review applied inline (F1 route init, F2 token invalidate on 401, F7 expires_in ≤ 0 force-refresh, F8 malformed page warn, F10 maxPages guard, F11 ProviderLogEntry JSON sink, F13 audit assertion)
-  1-12b-migrate-graph-anthropic: backlog  # depends on 1.12a
+  1-12b-migrate-graph-anthropic: done  # 2026-04-17: Graph + Anthropic on framework. GraphProviderClient (OAuthTokenAuth scope + refreshEpoch race guard + 401 recovery + absolute-URL nextLink for beta/regional), AnthropicLLMProvider (Option A, health via registry hooks), admin-alert sink (critical log + Graph sendMail, CBL_PROVIDER_ALERT_EMAIL gated), assessGraphAvailability gate in jobs, initializeLLMProviderFromStartup preserves test mocks. 4-layer adversarial review (Sonnet) → 1 decision resolved + 9 patches applied + 10 deferred. 609 unit tests pass (+40 new). Typecheck clean. callLlm() public API unchanged.
   1-12c-migrate-supabase: backlog  # depends on 1.12b
   epic-1-retrospective: done
 

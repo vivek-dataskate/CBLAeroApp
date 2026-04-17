@@ -157,7 +157,10 @@ describe('candidate-extraction', () => {
         { source: 'resume_upload', tenantId: 'test' }
       );
       expect(result.extraction).toBeNull();
-      expect(result.error).toContain('ANTHROPIC_API_KEY not configured');
+      // Review patch F1: availability check now goes via `getLLMProvider()`
+      // so a kill-switched Anthropic provider also lands here. Error text
+      // updated accordingly.
+      expect(result.error).toContain('LLM provider not configured');
     });
   });
 });

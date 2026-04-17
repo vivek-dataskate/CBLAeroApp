@@ -1,62 +1,30 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { getSharedAnthropicClient } from './client';
-import { recordLlmUsage } from './usage-log';
-
-export interface CallLlmOptions {
-  maxTokens?: number;
-  /** Caller-provided module name for structured logs */
-  module?: string;
-  /** Caller-provided action name for structured logs */
-  action?: string;
-  /** Prompt name from registry (for log attribution) */
-  promptName?: string;
-  /** Prompt version from registry (for log attribution) */
-  promptVersion?: string;
-}
-
-export interface CallLlmResult {
-  text: string;
-  inputTokens: number;
-  outputTokens: number;
-  inputChars: number;
-  outputChars: number;
-  durationMs: number;
-  model: string;
-  estimatedCostUsd: number;
-}
-
-// Per-million-token pricing (as of 2026-04 Anthropic pricing)
-const MODEL_PRICING: Record<string, { inputPerM: number; outputPerM: number }> = {
-  'claude-haiku-4-5-20251001': { inputPerM: 0.80, outputPerM: 4.00 },
-  'claude-sonnet-4-6': { inputPerM: 3.00, outputPerM: 15.00 },
-};
-const DEFAULT_PRICING = { inputPerM: 3.00, outputPerM: 15.00 };
-
-// D2 (Epic 2 retro): per-page surcharge for vision/document content blocks.
-// Anthropic bills PDF/image documents at ~$0.015/page, but reports tokens at
-// a lower count than the actual billed amount. This constant is applied as an
-// additive surcharge per document page on top of the token-based estimate.
-const VISION_PAGE_SURCHARGE_USD = 0.011; // conservative — Anthropic charges ~$0.015, we leave margin
-
-function estimateCost(
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-  documentPageCount: number = 0,
-): number {
-  const pricing = MODEL_PRICING[model] ?? DEFAULT_PRICING;
-  const tokenCost = (inputTokens * pricing.inputPerM + outputTokens * pricing.outputPerM) / 1_000_000;
-  const visionSurcharge = documentPageCount * VISION_PAGE_SURCHARGE_USD;
-  return tokenCost + visionSurcharge;
-}
-
 /**
  * Centralized LLM call wrapper.
- * - Uses the shared Anthropic client singleton
- * - Logs structured metrics with token counts and estimated cost
- * - Persists usage to llm_usage_log (fire-and-forget)
- * - Catches API errors gracefully (returns null + logs)
- * - Returns null if no API key configured
+ *
+ * Story 1.12b: the vendor-specific HTTP, cost, logging, and health paths
+ * moved into `AnthropicLLMProvider`. `callLlm()` is now a thin adapter that
+ * pulls the current `LLMProvider` from the factory and delegates to it —
+ * swapping Anthropic → OpenAI later requires a new provider class and env
+ * var, with ZERO caller changes.
+ *
+ * The public signature, return type, and null-on-unavailable semantics are
+ * unchanged. Callers (resume extraction, role deduction, scoring) see no
+ * difference.
+ */
+import type Anthropic from '@anthropic-ai/sdk';
+import { getLLMProvider } from './llm-factory';
+import type { LLMCallOptions, LLMResult } from './llm-provider';
+
+// Re-export the legacy-named options and result types so callers that import
+// from `inference.ts` keep compiling without a rename sweep.
+export type CallLlmOptions = LLMCallOptions;
+export type CallLlmResult = LLMResult;
+
+/**
+ * Invoke the active LLM provider. Returns `null` when:
+ *   - no vendor is configured (`ANTHROPIC_API_KEY` unset), or
+ *   - the provider is kill-switched via `ProviderRegistry`, or
+ *   - the underlying SDK call errored (error is logged; caller handles null).
  */
 export async function callLlm(
   model: string,
@@ -64,106 +32,7 @@ export async function callLlm(
   userContent: string | Anthropic.Messages.ContentBlockParam[],
   opts: CallLlmOptions = {}
 ): Promise<CallLlmResult | null> {
-  const client = getSharedAnthropicClient();
-  if (!client) return null;
-
-  const start = Date.now();
-  const inputChars = typeof userContent === 'string'
-    ? systemPrompt.length + userContent.length
-    : systemPrompt.length; // multimodal — char count not meaningful for binary
-
-  let message: Anthropic.Message;
-  try {
-    message = await client.messages.create({
-      model,
-      max_tokens: opts.maxTokens ?? 2048,
-      messages: [{ role: 'user', content: userContent }],
-      system: systemPrompt,
-    });
-  } catch (err) {
-    const durationMs = Date.now() - start;
-    console.error(
-      JSON.stringify({
-        level: 'error',
-        module: opts.module ?? 'ai',
-        action: 'llm_call_failed',
-        model,
-        promptName: opts.promptName,
-        promptVersion: opts.promptVersion,
-        inputChars,
-        durationMs,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    );
-    return null;
-  }
-
-  const text = message.content
-    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-    .map((block) => block.text)
-    .join('');
-
-  const durationMs = Date.now() - start;
-  const outputChars = text.length;
-  const inputTokens = message.usage.input_tokens;
-  const outputTokens = message.usage.output_tokens;
-  // D2: count document/image pages in the user content for vision cost surcharge.
-  // Document content blocks have `type: 'document'` with a `source` containing the
-  // PDF; image blocks have `type: 'image'`. Each counts as 1 page for cost purposes.
-  // Text blocks have `type: 'text'` and don't incur the surcharge.
-  const documentPageCount = Array.isArray(userContent)
-    ? userContent.filter((block) => {
-        const t = (block as unknown as Record<string, unknown>).type;
-        return t === 'document' || t === 'image';
-      }).length
-    : 0;
-  const estimatedCostUsd = estimateCost(model, inputTokens, outputTokens, documentPageCount);
-
-  // Structured metric log — every LLM call gets one
-  console.log(
-    JSON.stringify({
-      level: 'info',
-      module: opts.module ?? 'ai',
-      action: opts.action ?? 'llm_call',
-      model,
-      promptName: opts.promptName,
-      promptVersion: opts.promptVersion,
-      inputTokens,
-      outputTokens,
-      inputChars,
-      outputChars,
-      durationMs,
-      estimatedCostUsd: Math.round(estimatedCostUsd * 1_000_000) / 1_000_000, // 6 decimal places
-    })
-  );
-
-  // Persist usage to DB (fire-and-forget — never block the caller)
-  recordLlmUsage({
-    model,
-    promptName: opts.promptName ?? null,
-    promptVersion: opts.promptVersion ?? null,
-    module: opts.module ?? 'ai',
-    action: opts.action ?? 'llm_call',
-    inputTokens,
-    outputTokens,
-    durationMs,
-    estimatedCostUsd,
-  }).catch((err) => {
-    console.warn('[ai/usage-log] Failed to persist usage:', err instanceof Error ? err.message : err);
-  });
-
-  // Anomaly detection: warn if output looks like a leaked system prompt or injection echo
-  if (/system prompt|<\|im_start\|>|^\s*you are a\b/i.test(text)) {
-    console.warn(
-      JSON.stringify({
-        level: 'warn',
-        module: opts.module ?? 'ai',
-        action: 'anomaly_prompt_echo',
-        model,
-        outputSnippet: text.slice(0, 100),
-      })
-    );
-  }
-
-  return { text, inputTokens, outputTokens, inputChars, outputChars, durationMs, model, estimatedCostUsd };
+  const provider = getLLMProvider();
+  if (!provider) return null;
+  return provider.call(model, systemPrompt, userContent, opts);
 }

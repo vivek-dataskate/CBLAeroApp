@@ -1,7 +1,8 @@
 import {
-  getSharedAnthropicClient,
   clearClientForTest,
   callLlm,
+  getLLMProvider,
+  resetLLMProviderForTest,
   loadPrompt,
   registerFallbackPrompt,
 } from '@/modules/ai';
@@ -162,7 +163,12 @@ registerFallbackPrompt({
 // ---- Re-export client reset for test compatibility ----
 
 export function _resetClientForTest(): void {
+  // Reset BOTH the Anthropic SDK singleton and the LLMProvider factory
+  // cache. The provider wraps the SDK client captured at construction —
+  // without also resetting the factory, tests would get a stale wrapper
+  // pointing at a newly-cleared SDK client (review finding F6).
   clearClientForTest();
+  resetLLMProviderForTest();
 }
 
 // ---- Content Pre-processors ----
@@ -244,15 +250,19 @@ export async function extractCandidateFromDocument(
         return { extraction: null, error: `Unsupported content type: ${contentType}` };
     }
 
-    const client = getSharedAnthropicClient();
-    if (!client) {
+    // Review patch F1: check LLM availability via the provider abstraction
+    // so a kill-switched provider also triggers the regex fallback — the
+    // old check (`getSharedAnthropicClient()`) inspected only the raw SDK
+    // client and bypassed the kill-switch state in `ProviderRegistry`.
+    const provider = getLLMProvider();
+    if (!provider) {
       if (contentType === 'email_body') {
-        console.warn('[CandidateExtraction] ANTHROPIC_API_KEY not set — using regex fallback');
+        console.warn('[CandidateExtraction] LLM provider unavailable — using regex fallback');
         return {
           extraction: extractWithRegex(typeof content === 'string' ? content : '', metadata.subject ?? '', metadata.source),
         };
       }
-      return { extraction: null, error: 'ANTHROPIC_API_KEY not configured — cannot extract from PDF without LLM' };
+      return { extraction: null, error: 'LLM provider not configured — cannot extract from PDF without LLM' };
     }
 
     // Scanned image PDF: send raw PDF as document block for Claude vision OCR

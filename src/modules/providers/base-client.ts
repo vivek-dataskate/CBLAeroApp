@@ -109,7 +109,12 @@ export class BaseProviderClient {
         };
         await this.config.auth.applyAuth(headers);
 
-        const url = `${this.baseUrl}${path}`;
+        // Accept either a relative path (default) or an already-absolute URL.
+        // Callers like `GraphProviderClient` need this for `@odata.nextLink`
+        // values that point at a non-default Graph endpoint (beta, regional
+        // sovereign clouds). For the common case — relative paths — this is a
+        // zero-cost regex check.
+        const url = /^https?:\/\//i.test(path) ? path : `${this.baseUrl}${path}`;
         const response = await fetch(url, {
           method,
           headers,

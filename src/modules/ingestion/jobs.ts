@@ -1,7 +1,8 @@
 import { fetchCeipalApplicants, mapCeipalApplicantToCandidate, getCeipalCreatedOn } from '../ats';
 import { ensureProvidersInitialized, getProviderRegistry } from '../providers';
+import { getSharedGraphClient } from '../providers/graph';
+import type { ProviderCallResult } from '../providers/types';
 import { MicrosoftGraphEmailParser } from '../email';
-import { acquireGraphToken } from '../email/graph-auth';
 import { getSupabaseAdminClient, isSupabaseConfigured } from '../persistence';
 import { extractCandidateFromDocument } from '../../features/candidate-management/application/candidate-extraction';
 import { deduceRoles } from '../../features/candidate-management/application/role-deduction';
@@ -32,6 +33,24 @@ export interface SchedulerJob {
   run(): Promise<void>;
 }
 
+/**
+ * Graph provider gate for ingestion jobs. Returns `'available'` when the
+ * provider is registered and in `'normal'` or `'degraded'` mode;
+ * `'kill_switched'` when explicitly disabled; `'unavailable'` when the
+ * provider wasn't registered at all (init failed or env missing).
+ *
+ * Review patch B7/E4: the pre-patch check only compared against
+ * `'kill_switched'`, so a `null` mode (unregistered) fell through and
+ * downstream `requireGraph()` threw, producing a dirty `failSyncRun`
+ * instead of a clean skip.
+ */
+function assessGraphAvailability(): 'available' | 'kill_switched' | 'unavailable' {
+  const mode = getProviderRegistry().getMode('graph');
+  if (mode === null) return 'unavailable';
+  if (mode === 'kill_switched') return 'kill_switched';
+  return 'available';
+}
+
 export type SchedulerRegistration = {
   jobKey: string;
   scheduleName: string;
@@ -54,6 +73,28 @@ export class EmailIngestionJob implements SchedulerJob {
   async run() {
     const runId = await createSyncRun('email');
     try {
+      // Graph is registered by `ensureProvidersInitialized` — wiring its health
+      // hooks and kill-switch restore. The email parser fails fast if the Graph
+      // client isn't built (no env), so the init has to run first.
+      try {
+        await ensureProvidersInitialized();
+      } catch (initErr) {
+        console.error(
+          '[EmailIngestionJob] ensureProvidersInitialized failed (non-fatal):',
+          initErr instanceof Error ? initErr.message : initErr,
+        );
+      }
+
+      const graphStatus = assessGraphAvailability();
+      if (graphStatus !== 'available') {
+        const reason = graphStatus === 'kill_switched'
+          ? 'graph provider kill_switched'
+          : 'graph provider unregistered (init failed or Entra env missing)';
+        console.warn(`[EmailIngestionJob] Skipping run — ${reason}`);
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
       // Fingerprint gate: safety net for any emails that slip past the isRead filter
       const processedIds = await loadRecentFingerprints(DEFAULT_TENANT_ID, 'email_message_id', 3650);
 
@@ -264,8 +305,31 @@ export class OneDriveResumePollerJob implements SchedulerJob {
   async run() {
    const runId = await createSyncRun('onedrive');
    try {
-    const token = await acquireGraphToken();
-    const allFiles = await this.listPdfFiles(token);
+    try {
+      await ensureProvidersInitialized();
+    } catch (initErr) {
+      console.error(
+        '[OneDrivePoller] ensureProvidersInitialized failed (non-fatal):',
+        initErr instanceof Error ? initErr.message : initErr,
+      );
+    }
+
+    const graphStatus = assessGraphAvailability();
+    if (graphStatus !== 'available') {
+      const reason = graphStatus === 'kill_switched'
+        ? 'graph provider kill_switched'
+        : 'graph provider unregistered (init failed or Entra env missing)';
+      console.warn(`[OneDrivePoller] Skipping run — ${reason}`);
+      await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+      return;
+    }
+
+    const graph = getSharedGraphClient();
+    if (!graph) {
+      throw new Error('Graph client not configured — cannot poll OneDrive');
+    }
+
+    const allFiles = await this.listPdfFiles(graph);
 
     // Filter out non-resume files by filename before downloading
     const skippedNames: string[] = [];
@@ -279,7 +343,7 @@ export class OneDriveResumePollerJob implements SchedulerJob {
       // Delete skipped files from OneDrive — they're not resumes
       for (const name of skippedNames) {
         const file = allFiles.find((f) => f.name === name);
-        if (file) await this.deleteFromOneDrive(token, file.id, file.name);
+        if (file) await this.deleteFromOneDrive(graph, file.id, file.name);
       }
     }
 
@@ -325,7 +389,7 @@ export class OneDriveResumePollerJob implements SchedulerJob {
             const fileHash = computeFileHash(buffer);
             if (await isAlreadyProcessed(DEFAULT_TENANT_ID, 'file_sha256', fileHash)) {
               console.log(JSON.stringify({ event: 'fingerprint_hit', type: 'file_sha256', source: 'onedrive', tenantId: DEFAULT_TENANT_ID, hash: fileHash.slice(0, 12) }));
-              await this.deleteFromOneDrive(token, file.id, file.name);
+              await this.deleteFromOneDrive(graph, file.id, file.name);
               return { status: 'skipped' as const, file };
             }
 
@@ -349,7 +413,7 @@ export class OneDriveResumePollerJob implements SchedulerJob {
               await recordFingerprint({ tenantId: DEFAULT_TENANT_ID, type: 'file_sha256', hash: fileHash, source: 'onedrive', status: 'failed' });
               recordSyncFailure('onedrive', file.name, result.error ?? 'Extraction returned no data', runId);
               if (storageUrl) {
-                await this.deleteFromOneDrive(token, file.id, file.name);
+                await this.deleteFromOneDrive(graph, file.id, file.name);
               } else {
                 console.warn(`[OneDrivePoller] Keeping ${file.name} in OneDrive — storage backup failed`);
               }
@@ -361,7 +425,7 @@ export class OneDriveResumePollerJob implements SchedulerJob {
             console.log(`[OneDrivePoller] Processed ${file.name} → ${ext.firstName} ${ext.lastName}`);
 
             if (storageUrl) {
-              await this.deleteFromOneDrive(token, file.id, file.name);
+              await this.deleteFromOneDrive(graph, file.id, file.name);
             } else {
               console.warn(`[OneDrivePoller] Keeping ${file.name} in OneDrive — no storage backup`);
             }
@@ -425,7 +489,7 @@ export class OneDriveResumePollerJob implements SchedulerJob {
     }
 
     // Clean up empty subfolders after processing
-    await this.deleteEmptySubfolders(token);
+    await this.deleteEmptySubfolders(graph);
 
     console.log(`[OneDrivePoller] Complete: ${imported} imported, ${skipped} skipped, ${failed} failed out of ${files.length} files`);
     await completeSyncRun(runId, { succeeded: imported + skipped, failed, total: files.length });
@@ -440,7 +504,7 @@ export class OneDriveResumePollerJob implements SchedulerJob {
   /** Graph API page size */
   private static PAGE_SIZE = 200;
 
-  private async listPdfFiles(token: string): Promise<Array<{ id: string; name: string; size: number; downloadUrl: string }>> {
+  private async listPdfFiles(graph: import('../providers/graph').GraphProviderClient): Promise<Array<{ id: string; name: string; size: number; downloadUrl: string }>> {
     type GraphItem = {
       id: string;
       name: string;
@@ -453,34 +517,29 @@ export class OneDriveResumePollerJob implements SchedulerJob {
     const allPdfs: Array<{ id: string; name: string; size: number; downloadUrl: string }> = [];
     const user = encodeURIComponent(this.driveUser);
 
-    // BFS queue of folder URLs to scan (starts with the configured root folder)
+    // BFS queue of folder paths to scan (starts with the configured root folder)
     const folderQueue: string[] = [
-      `https://graph.microsoft.com/v1.0/users/${user}/drive/root:/${this.folderPath}:/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`,
+      `/users/${user}/drive/root:/${this.folderPath}:/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`,
     ];
 
     while (folderQueue.length > 0 && allPdfs.length < OneDriveResumePollerJob.MAX_FILES_PER_RUN) {
-      let url: string | null = folderQueue.shift()!;
+      let nextPath: string | null = folderQueue.shift()!;
 
       // Paginate through all items in this folder
-      while (url && allPdfs.length < OneDriveResumePollerJob.MAX_FILES_PER_RUN) {
-        const response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}` } });
-
-        if (!response.ok) {
-          const text = await response.text();
-          console.warn(`[OneDrivePoller] Folder listing failed (${response.status}): ${text}`);
+      type FolderPage = { value: GraphItem[]; '@odata.nextLink'?: string };
+      while (nextPath && allPdfs.length < OneDriveResumePollerJob.MAX_FILES_PER_RUN) {
+        const result: ProviderCallResult<FolderPage> = await graph.get<FolderPage>(nextPath);
+        if (!result.ok) {
+          console.warn(`[OneDrivePoller] Folder listing failed (${result.status}): ${result.error ?? ''}`);
           break;
         }
+        const data: FolderPage | null = result.data;
 
-        const data = await response.json() as {
-          value: GraphItem[];
-          '@odata.nextLink'?: string;
-        };
-
-        for (const item of data.value ?? []) {
+        for (const item of data?.value ?? []) {
           // Queue subfolders for recursive scanning
           if (item.folder) {
             folderQueue.push(
-              `https://graph.microsoft.com/v1.0/users/${user}/drive/items/${item.id}/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`
+              `/users/${user}/drive/items/${item.id}/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`
             );
             continue;
           }
@@ -495,7 +554,10 @@ export class OneDriveResumePollerJob implements SchedulerJob {
           }
         }
 
-        url = data['@odata.nextLink'] ?? null;
+        // Empty-string nextLink would loop forever (review finding E6) —
+        // treat it as end-of-pagination alongside null/undefined.
+        const rawNext = data?.['@odata.nextLink'];
+        nextPath = rawNext && rawNext.length > 0 ? rawNext : null;
       }
     }
 
@@ -516,19 +578,19 @@ export class OneDriveResumePollerJob implements SchedulerJob {
     return Buffer.from(arrayBuffer);
   }
 
-  private async deleteFromOneDrive(token: string, fileId: string, filename: string): Promise<void> {
+  private async deleteFromOneDrive(graph: import('../providers/graph').GraphProviderClient, fileId: string, filename: string): Promise<void> {
     const user = encodeURIComponent(this.driveUser);
-    const url = `https://graph.microsoft.com/v1.0/users/${user}/drive/items/${fileId}`;
+    const path = `/users/${user}/drive/items/${fileId}`;
 
-    const response = await fetchWithRetry(url, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const result = await graph.delete(path);
 
-    if (response.ok || response.status === 204) {
+    // Graph returns 204 No Content on success; BaseProviderClient surfaces
+    // that as ok=true (any 2xx counts). Explicit 204 guard preserved for
+    // parity with the legacy fetchWithRetry log line.
+    if (result.ok || result.status === 204) {
       console.log(`[OneDrivePoller] Deleted ${filename} from OneDrive`);
     } else {
-      console.warn(`[OneDrivePoller] Failed to delete ${filename} from OneDrive (${response.status})`);
+      console.warn(`[OneDrivePoller] Failed to delete ${filename} from OneDrive (${result.status})`);
     }
   }
 
@@ -537,37 +599,37 @@ export class OneDriveResumePollerJob implements SchedulerJob {
    * Processes deepest folders first (reverse BFS) so parent folders become
    * empty after their children are removed.
    */
-  private async deleteEmptySubfolders(token: string): Promise<void> {
+  private async deleteEmptySubfolders(graph: import('../providers/graph').GraphProviderClient): Promise<void> {
     const user = encodeURIComponent(this.driveUser);
-    const rootUrl = `https://graph.microsoft.com/v1.0/users/${user}/drive/root:/${this.folderPath}:/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`;
+    const rootPath = `/users/${user}/drive/root:/${this.folderPath}:/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`;
 
     type FolderEntry = { id: string; name: string };
 
     // BFS to collect all subfolder IDs (not the root itself)
-    const folderQueue: string[] = [rootUrl];
+    const folderQueue: string[] = [rootPath];
     const allSubfolders: FolderEntry[] = [];
 
     while (folderQueue.length > 0) {
-      const url = folderQueue.shift()!;
-      const response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}` } });
-      if (!response.ok) continue;
-
-      const data = await response.json() as {
+      const nextPath = folderQueue.shift()!;
+      const result = await graph.get<{
         value: Array<{ id: string; name: string; folder?: { childCount: number } }>;
         '@odata.nextLink'?: string;
-      };
+      }>(nextPath);
+      if (!result.ok) continue;
+      const data = result.data;
 
-      for (const item of data.value ?? []) {
+      for (const item of data?.value ?? []) {
         if (item.folder) {
           allSubfolders.push({ id: item.id, name: item.name });
           folderQueue.push(
-            `https://graph.microsoft.com/v1.0/users/${user}/drive/items/${item.id}/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`
+            `/users/${user}/drive/items/${item.id}/children?$top=${OneDriveResumePollerJob.PAGE_SIZE}`
           );
         }
       }
 
-      if (data['@odata.nextLink']) {
-        folderQueue.push(data['@odata.nextLink']);
+      const rawNext = data?.['@odata.nextLink'];
+      if (rawNext && rawNext.length > 0) {
+        folderQueue.push(rawNext);
       }
     }
 
@@ -575,25 +637,19 @@ export class OneDriveResumePollerJob implements SchedulerJob {
 
     // Delete deepest first (reverse order since BFS goes top-down)
     for (const folder of allSubfolders.reverse()) {
-      // Check if folder is now empty
-      const checkUrl = `https://graph.microsoft.com/v1.0/users/${user}/drive/items/${folder.id}/children?$top=1`;
-      const checkRes = await fetchWithRetry(checkUrl, { headers: { Authorization: `Bearer ${token}` } });
-      if (!checkRes.ok) continue;
-
-      const checkData = await checkRes.json() as { value: unknown[] };
-      if ((checkData.value ?? []).length > 0) continue;
+      const checkResult = await graph.get<{ value: unknown[] }>(
+        `/users/${user}/drive/items/${folder.id}/children?$top=1`,
+      );
+      if (!checkResult.ok) continue;
+      if ((checkResult.data?.value ?? []).length > 0) continue;
 
       // Folder is empty — delete it
-      const delUrl = `https://graph.microsoft.com/v1.0/users/${user}/drive/items/${folder.id}`;
-      const delRes = await fetchWithRetry(delUrl, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const delResult = await graph.delete(`/users/${user}/drive/items/${folder.id}`);
 
-      if (delRes.ok || delRes.status === 204) {
+      if (delResult.ok || delResult.status === 204) {
         console.log(`[OneDrivePoller] Deleted empty subfolder: ${folder.name}`);
       } else {
-        console.warn(`[OneDrivePoller] Failed to delete subfolder ${folder.name} (${delRes.status})`);
+        console.warn(`[OneDrivePoller] Failed to delete subfolder ${folder.name} (${delResult.status})`);
       }
     }
   }
@@ -621,8 +677,30 @@ export class SavedSearchDigestJob implements SchedulerJob {
       const { listCandidates } = await import(
         '../../features/candidate-management/infrastructure/candidate-repository'
       );
-      const { acquireGraphToken: getToken } = await import('../email/graph-auth');
-      const { fetchWithRetry: fetchRetry } = await import('./fetch-with-retry');
+
+      try {
+        await ensureProvidersInitialized();
+      } catch (initErr) {
+        console.error(
+          '[SavedSearchDigestJob] ensureProvidersInitialized failed (non-fatal):',
+          initErr instanceof Error ? initErr.message : initErr,
+        );
+      }
+
+      const graphStatus = assessGraphAvailability();
+      if (graphStatus !== 'available') {
+        const reason = graphStatus === 'kill_switched'
+          ? 'graph provider kill_switched'
+          : 'graph provider unregistered (init failed or Entra env missing)';
+        console.warn(`[SavedSearchDigestJob] Skipping run — ${reason}`);
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
+      const graph = getSharedGraphClient();
+      if (!graph) {
+        throw new Error('Graph client not configured — cannot send digest');
+      }
 
       const MAX_DIGESTS_PER_RUN = 100;
       const INTER_SEND_DELAY_MS = 500;
@@ -686,29 +764,22 @@ export class SavedSearchDigestJob implements SchedulerJob {
               <p style="margin-top:16px;color:#9ca3af;font-size:12px">— CBL Aero Recruiting Platform</p>
             </div>`;
 
-          // Send email via Microsoft Graph
-          const token = await getToken();
+          // Send email via Microsoft Graph — routes through the provider
+          // framework (auth, retry on 5xx/429, structured logging, health).
           const senderAddress = process.env.CBL_DIGEST_SENDER ?? 'submissions-inbox@cblsolutions.com';
-          const sendUrl = `https://graph.microsoft.com/v1.0/users/${senderAddress}/sendMail`;
-
-          const sendResponse = await fetchRetry(sendUrl, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json',
+          const sendPath = `/users/${senderAddress}/sendMail`;
+          const sendResult = await graph.post(sendPath, {
+            message: {
+              subject: `CBL Aero Daily Digest: "${search.name}" — ${date}`,
+              body: { contentType: 'HTML', content: html },
+              toRecipients: [{ emailAddress: { address: search.actorEmail } }],
             },
-            body: JSON.stringify({
-              message: {
-                subject: `CBL Aero Daily Digest: "${search.name}" — ${date}`,
-                body: { contentType: 'HTML', content: html },
-                toRecipients: [{ emailAddress: { address: search.actorEmail } }],
-              },
-            }),
           });
 
-          if (!sendResponse.ok && sendResponse.status !== 202) {
-            const errText = await sendResponse.text().catch(() => '(no body)');
-            throw new Error(`Graph sendMail failed (${sendResponse.status}): ${errText}`);
+          // Graph sendMail returns 202 Accepted on success (empty body).
+          // BaseProviderClient treats any 2xx as ok — no special-case needed.
+          if (!sendResult.ok) {
+            throw new Error(`Graph sendMail failed (${sendResult.status}): ${sendResult.error ?? 'unknown error'}`);
           }
 
           console.log(`[SavedSearchDigestJob] Sent digest for "${search.name}" to ${search.actorEmail}`);
