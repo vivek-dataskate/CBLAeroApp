@@ -1,6 +1,6 @@
 # Story 1.12a: Migrate Clay + Ceipal to Provider Framework
 
-Status: ready-for-dev
+Status: in-progress
 
 ## Story
 
@@ -160,14 +160,14 @@ First consumers of the provider framework (Story 1.12). Clay and Ceipal are chos
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1: Clay webhook — BaseWebhookReceiver migration** (AC: 1)
-  - [ ] 1.1 Create `src/modules/providers/clay/` directory (consumer-owned, adjacent to framework)
-  - [ ] 1.2 Create `src/modules/providers/clay/clay-webhook-receiver.ts` — instantiate `BaseWebhookReceiver` with `source='clay'`, `auth: new BearerTokenWebhookAuth(process.env.CLAY_WEBHOOK_SECRET)`, `maxPayloadBytes: 256*1024`, and `extractEvents` handling all 4 payload shapes (copy logic from `route.ts:151-178` verbatim — do NOT simplify)
-  - [ ] 1.3 Create `src/modules/providers/clay/clay-webhook-handler.ts` — implements `WebhookHandler.handle(event)`. Body: resolve assignee (reuse existing cache — extract `resolveDefaultAssignee()` into handler module if needed), call `mapClayRowToCandidate`, compute fingerprint via existing `computeClayFingerprint`, run `isAlreadyProcessed` gate, call `batchUpsertCandidatesFromATS`, record fingerprint via `recordFingerprint`. Return `{ meta: { syncRunId, candidateId, outcome: 'inserted' | 'updated' | 'skipped_duplicate' } }`.
-  - [ ] 1.4 Preserve the 3-phase hourly bucket flow in `/api/webhooks/clay/route.ts` (bucket acquisition pre-handler, per-row processing, final count upsert post-handler) — the bucket RPC wraps the `receiver.receive()` + processor-drain call
-  - [ ] 1.5 Refactor `src/app/api/webhooks/clay/route.ts` so the route is thin: parse body, call `clayReceiver.receive(rawBody, headers)`, let the processor drain events synchronously for this request (acceptable since Clay batches are small; preserve current in-request processing — do NOT move to background async)
-  - [ ] 1.6 Keep `normalizePayload()`, `resolveDefaultAssignee()`, `__resetClayWebhookCacheForTests()`, and the per-row logic accessible as exported helpers so existing tests don't need rewriting
-  - [ ] 1.7 Verify all 55 tests in `src/app/api/webhooks/clay/__tests__/route.test.ts` pass unchanged — if a test asserts an implementation detail that moved, prefer adding a thin shim that preserves the old assertion over rewriting the test
+- [x] **Task 1: Clay webhook — BaseWebhookReceiver migration** (AC: 1)
+  - [x] 1.1 Create `src/modules/providers/clay/` directory (consumer-owned, adjacent to framework)
+  - [x] 1.2 Create `src/modules/providers/clay/clay-webhook-receiver.ts` — instantiate `BaseWebhookReceiver` with `source='clay_enrichment'` (per AC 1 / AC 5 preservation map; task text had `source='clay'` typo), `auth: new BearerTokenWebhookAuth(process.env.CLAY_WEBHOOK_SECRET)`, `maxPayloadBytes: 256*1024`, and `extractEvents` handling all 4 payload shapes (ported verbatim from legacy `normalizePayload()` incl. P10 sole-key-rows guard + P11 double-wrap flatten)
+  - [x] 1.3 Create `src/modules/providers/clay/clay-webhook-handler.ts` — implements `WebhookHandler.handle(event)`. Exports `processClayRow()` + `ClayWebhookHandler` class. Handler reuses existing `mapClayRowToCandidate`, `computeClayFingerprint`, `isAlreadyProcessed`, `batchUpsertCandidatesFromATS`, `recordFingerprint`. Returns `{ meta: { syncRunId, candidateId: null, outcome: 'inserted' | 'skipped_duplicate' | 'skipped_no_identity' | 'error', rowStatus, fingerprint, error } }`. `candidateId` wiring deferred — the shared batch helper does not yet surface it; will be addressed in Task 2/3 sweep if needed.
+  - [x] 1.4 Preserve the 3-phase hourly bucket flow in `/api/webhooks/clay/route.ts` (bucket acquisition pre-receiver, per-row processing via `WebhookProcessor.processBatch()`, final count upsert post-handler)
+  - [x] 1.5 Refactor `src/app/api/webhooks/clay/route.ts` so the route is thin: env check → byte-exact body read (kept for exact `PAYLOAD_TOO_LARGE` message) → shape pre-check (framework `extractEvents` can't disambiguate empty-batch from bad-shape — see below) → auth normalization → assignee resolve → Phase 1 bucket seed → `receiver.receive()` → synchronous `processor.processBatch()` drain → outcome tally → Phase 3 bucket increment → response
+  - [x] 1.6 Keep `__resetClayWebhookCacheForTests()` exported from route.ts (delegates to `resetClayAssigneeCacheForTests`); extract `resolveDefaultAssignee` / cache into `src/modules/providers/clay/clay-assignee.ts`; extract per-row logic into handler module as `processClayRow()` and `ClayWebhookHandler`
+  - [x] 1.7 All 27 tests in `src/app/api/webhooks/clay/__tests__/route.test.ts` pass unchanged. Additional 52 Clay mapper tests also pass (79 Clay tests total). No test file rewrites — only the route internals moved. (Story's "55 tests" count was an estimate; actual = 27 route + 52 mapper = 79.)
 
 - [ ] **Task 2: Clay outbound client — created, not wired** (AC: 2)
   - [ ] 2.1 Create `src/modules/providers/clay/clay-client.ts` — exports `ClayProviderClient` class wrapping `BaseProviderClient`. Constructor reads `CLAY_API_KEY` and `CLAY_API_BASE_URL` (default `https://api.clay.com`) from env.
@@ -349,8 +349,71 @@ These were added/changed in Story 1.12 specifically to unblock 1-12a — use the
 
 ### Agent Model Used
 
+- Claude Opus 4.7 (1M context) — bmad-dev-story skill (2026-04-17)
+
 ### Debug Log References
+
+None — no halt conditions triggered during Task 1.
 
 ### Completion Notes List
 
+**Task 1 (PR A) — Clay webhook inbound migration, 2026-04-17**
+
+Per user direction, Task 1 was landed in isolation (PR A); Tasks 2–5 are bundled for a follow-up PR (PR B) in a fresh session.
+
+What was implemented:
+- Four new consumer-owned modules under `src/modules/providers/clay/`:
+  - `clay-webhook-receiver.ts` — factory + `extractClayRows()` covering all four Clay payload shapes (flat array, single object, sole-key `{rows:[…]}` envelope, double-wrapped `[[…]]`).
+  - `clay-webhook-handler.ts` — `ClayWebhookHandler implements WebhookHandler` + `processClayRow()` ported verbatim from the legacy inline `processRow()`. Returns `WebhookHandlerResult.meta` with `{syncRunId, candidateId:null, outcome, rowStatus, fingerprint?, error?}`. Never throws on row-level errors — converts them to `{status:'error'}` outcomes so sibling rows keep processing (Story 2.8 containment invariant preserved).
+  - `clay-in-request-store.ts` — `ClayInRequestStore` implements both `WebhookEventStore` and `WebhookProcessorStore`. In-memory queue for synchronous drain, best-effort `webhook_events` persistence via Supabase admin (insert on receive, update status/result_meta on complete/fail/dead-letter). Uses `typeof builder.insert/update === 'function'` guards so test-mocked Supabase clients are tolerated without stderr noise.
+  - `clay-assignee.ts` — `resolveDefaultAssignee()` + 1-hour TTL cache extracted from route, plus `resetClayAssigneeCacheForTests()` test hook.
+- Route refactored to a thin orchestrator — `src/app/api/webhooks/clay/route.ts` dropped from 516 → ~250 LOC. 
+- Byte-exact size check + shape pre-check kept in the route (not delegated to the framework) so the `PAYLOAD_TOO_LARGE` and `UNRECOGNIZED_SHAPE` error messages are preserved byte-identical — otherwise the framework's `rejected_size` / `rejected_parse` generic reasons would regress the Story 2.8 error contract.
+- `__resetClayWebhookCacheForTests` re-exported from route.ts unchanged; delegates to the new assignee-module clear.
+
+Preservation verification:
+- 27/27 existing route tests pass unchanged (no mock boundaries moved — still `@/modules/ingestion`, `@/modules/persistence`, fingerprint repo).
+- 52/52 existing Clay mapper tests pass (mapper file untouched).
+- Full vitest: 536 passed + 4 pre-existing failures (tests/api/scheduler-api.spec.ts — requires running dev server, unrelated).
+- `npm run typecheck` clean.
+- `npm run lint`: all new files clean; 7 lint errors remain in untouched files (pre-existing).
+
+E2E smoke suite vs running dev server (9 scenarios, all PASS):
+1. Missing auth → 401 UNAUTHORIZED
+2. Wrong bearer → 401
+3. Empty body → 400 BAD_JSON
+4. Invalid JSON → 400 BAD_JSON
+5. Garbage shape (string body) → 400 UNRECOGNIZED_SHAPE
+6. Oversized (300 KB) → 413 PAYLOAD_TOO_LARGE with actual byte count in message
+7. Valid auth + no-identity row → 200, `bucket_run_id` populated (UUID), `received=1`, `skipped=1`, `accepted=0`, `errored=0`
+8. Empty array → 200, `received=0`
+9. At-limit (260 KB body, under 262144 cap) → 200 (accepted, skipped by fingerprint gate)
+
+Scenario 7 confirmed real Supabase RPC connectivity: the `upsert_clay_hourly_sync_run` RPC returned a valid hourly bucket UUID, proving the 3-phase bucket pattern still executes end-to-end.
+
+What's NOT in this PR (deferred to PR B, tasks 2–5):
+- Task 2: `ClayProviderClient` (outbound API client, not wired to product code).
+- Task 3: `CeipalProviderClient` + `CeipalAuthStrategy`.
+- Task 4: Routing-policy seed migration + `ensureProvidersInitialized()` + `PostgresHealthEventStore` wire-up.
+- Task 5: Two new AC 6 audit integration tests + full DoD validation.
+
+Minor deviations noted:
+- Story task 1.2 text says `source='clay'`, but AC 1 + AC 5 preservation map both require `source='clay_enrichment'`. Used the AC value.
+- `candidateId` is `null` in the handler result — the shared `batchUpsertCandidatesFromATS` helper does not surface per-row candidate IDs. Logged as a follow-up for Tasks 2–5 sweep if traceability needs tightening.
+
 ### File List
+
+**New files:**
+- `src/modules/providers/clay/clay-webhook-receiver.ts`
+- `src/modules/providers/clay/clay-webhook-handler.ts`
+- `src/modules/providers/clay/clay-in-request-store.ts`
+- `src/modules/providers/clay/clay-assignee.ts`
+
+**Modified files:**
+- `src/app/api/webhooks/clay/route.ts`
+- `_bmad-output/stories/1-12a-migrate-clay-ceipal-to-provider-framework.md` (Task 1 checkboxes + Dev Agent Record + this file list + status)
+- `_bmad-output/sprint-status.yaml` (1-12a: ready-for-dev → in-progress)
+
+### Change Log
+
+- 2026-04-17 — Task 1 (PR A): Clay webhook migrated onto `BaseWebhookReceiver` + `WebhookHandler` + `WebhookProcessor`. Zero behavior change from Story 2.8 — all 27 route tests pass unchanged, e2e smoke against real dev server passes 9/9.
