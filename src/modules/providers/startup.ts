@@ -41,6 +41,11 @@ import { emitProviderAdminAlert } from './admin-alert';
 import type { BaseProviderClient } from './base-client';
 import type { ProviderLogEntry } from './types';
 import { isSupabaseConfigured, getSupabaseAdminClient } from '@/modules/persistence';
+import {
+  SupabaseHealthProvider,
+  setSharedSupabaseHealthProvider,
+  getSharedSupabaseHealthProvider,
+} from './supabase';
 
 /** The one `ProviderRegistry` the entire app uses. */
 let sharedRegistry: ProviderRegistry | null = null;
@@ -83,6 +88,16 @@ export function ensureProvidersInitialized(
   initializationPromise = initializeImpl(options).catch((err) => {
     // If initialization fails, clear the promise so the next caller can retry.
     initializationPromise = null;
+    // Also tear down any partially-initialized shared Supabase health provider.
+    // If the failure happened AFTER `setSharedSupabaseHealthProvider(healthProvider)`
+    // but BEFORE `dbWiringComplete = true`, the next retry would find the stale
+    // singleton, skip construction, and leave `dbWiringComplete` false forever —
+    // permanently wedging DB wiring. Clear so the retry rebuilds from scratch.
+    const staleProvider = getSharedSupabaseHealthProvider();
+    if (staleProvider) {
+      staleProvider.stop();
+      setSharedSupabaseHealthProvider(null);
+    }
     throw err;
   });
   return initializationPromise;
@@ -99,6 +114,9 @@ export function ensureProvidersInitialized(
 let dbWiringComplete = false;
 
 export function resetProvidersForTest(): void {
+  // Stop any running health pings before dropping the reference.
+  getSharedSupabaseHealthProvider()?.stop();
+  setSharedSupabaseHealthProvider(null);
   sharedRegistry = null;
   initializationPromise = null;
   dbWiringComplete = false;
@@ -203,7 +221,15 @@ async function initializeImpl(
     });
   };
 
-  // ── 3. Restore mode from provider_routing_policies ──
+  // ── 3. Register Supabase (Story 1.12c) ──
+  // MUST happen BEFORE the routing-policy restore loop — otherwise any
+  // `provider_routing_policies` row for `supabase` (e.g. operator-set
+  // `kill_switched`) is silently skipped because the loop's
+  // `registry.getProvider(...)` guard returns null for unregistered
+  // providers. Review finding C3 / P1.
+  safeRegister(registry, 'supabase');
+
+  // ── 4. Restore mode from provider_routing_policies ──
   const { data, error } = await supabase
     .from('provider_routing_policies')
     .select('primary_provider, mode, reason');
@@ -221,6 +247,30 @@ async function initializeImpl(
     // vars for a provider aren't configured in this environment.
     if (!registry.getProvider(row.primary_provider)) continue;
     registry.setMode(row.primary_provider, mode, row.reason ?? 'Restored from routing policies');
+  }
+
+  // ── 5. Start Supabase health ping ──
+  // Client factory is NOT wrapped — the ping is the only integration point
+  // between Supabase and the provider framework (AC 3). The restored mode
+  // from step 4 (if any) is preserved; the health provider does not clobber
+  // it.
+  if (!getSharedSupabaseHealthProvider()) {
+    const healthProvider = new SupabaseHealthProvider({
+      registry,
+      pingFn: async () => {
+        // Lightweight connectivity check against a table known to exist in
+        // the cblaero_app schema. `head: true, count: 'exact', limit: 1`
+        // returns no row data, only a count header — measures reachability,
+        // not throughput.
+        const { error: pingError } = await supabase
+          .from('provider_health_events')
+          .select('provider', { head: true, count: 'exact' })
+          .limit(1);
+        if (pingError) throw new Error(pingError.message);
+      },
+    });
+    setSharedSupabaseHealthProvider(healthProvider);
+    healthProvider.start();
   }
 
   dbWiringComplete = true;

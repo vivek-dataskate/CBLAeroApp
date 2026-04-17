@@ -74,3 +74,14 @@ export type {
   GraphProviderClientConfig,
   GraphRequestOptions,
 } from './graph';
+
+// Supabase health provider (story 1-12c)
+export {
+  SupabaseHealthProvider,
+  setSharedSupabaseHealthProvider,
+  getSharedSupabaseHealthProvider,
+  resetSharedSupabaseHealthProviderForTest,
+  reportSupabaseDbSuccess,
+  reportSupabaseDbFailure,
+} from './supabase';
+export type { SupabaseHealthProviderConfig } from './supabase';

@@ -5,7 +5,7 @@
 # story_location: docs/implementation_artifacts/stories
 
 generated: 2026-03-11
-last_updated: 2026-04-17  # Story 1-12b DONE (code review + 9 patches + decision resolved; 609 tests pass)
+last_updated: 2026-04-17  # Story 1-12c DONE (code review + 11 patches + admin dashboard UI); 3-1 + 3-2 still READY-FOR-DEV
 project: CBLAero
 project_key: NOKEY
 tracking_system: file-system
@@ -54,7 +54,7 @@ epic_schedule:
     finish: week-4
 
 development_status:
-  epic-1: in-progress  # reopened for provider framework (1.12 + 1.12a/b/c)
+  epic-1: done  # 2026-04-17: all provider framework stories complete (1.12 + 1.12a/b/c); reopened for framework, now closed
   1-1-initialize-next-js-baseline-with-core-platform-modules: done
   1-2-implement-enterprise-sso-and-session-controls: done
   1-3-enforce-rbac-and-tenant-isolated-authorization: done
@@ -70,7 +70,7 @@ development_status:
   1-12-edge-system-provider-framework: done  # 2026-04-16: framework complete + 2 code reviews, 110 tests passing
   1-12a-migrate-clay-ceipal: done  # 2026-04-17: PR A #97 (Task 1) + PR B #99 (Tasks 2-5) merged to master; Opus 4-layer review applied inline (F1 route init, F2 token invalidate on 401, F7 expires_in ≤ 0 force-refresh, F8 malformed page warn, F10 maxPages guard, F11 ProviderLogEntry JSON sink, F13 audit assertion)
   1-12b-migrate-graph-anthropic: done  # 2026-04-17: Graph + Anthropic on framework. GraphProviderClient (OAuthTokenAuth scope + refreshEpoch race guard + 401 recovery + absolute-URL nextLink for beta/regional), AnthropicLLMProvider (Option A, health via registry hooks), admin-alert sink (critical log + Graph sendMail, CBL_PROVIDER_ALERT_EMAIL gated), assessGraphAvailability gate in jobs, initializeLLMProviderFromStartup preserves test mocks. 4-layer adversarial review (Sonnet) → 1 decision resolved + 9 patches applied + 10 deferred. 609 unit tests pass (+40 new). Typecheck clean. callLlm() public API unchanged.
-  1-12c-migrate-supabase: backlog  # depends on 1.12b
+  1-12c-migrate-supabase: done  # 2026-04-17: SupabaseHealthProvider + Sonnet 4-layer review (46→2 decision + 11 patch + 7 defer) + all fixes applied + admin /api/internal/admin/providers + ProviderHealthCard UI. Critical fixes: startup step-ordering (routing-policy restore), recover from any degraded mode, ping Promise.race timeout, init-retry cleanup, null-mode warn, safe setMode, pingInFlight reset, threshold clamp. 22 tests (6 new regressions). 355/356 pass. Typecheck + lint clean.
   epic-1-retrospective: done
 
   epic-2: done  # 2026-04-16: all 13 stories done, retro complete, 430 tests at close
@@ -90,8 +90,8 @@ development_status:
   epic-2-retrospective: done  # 2026-04-16: full retro with 3 action items, 3 debt items, 1 team agreement. Saved to epic-2-retro-2026-04-16.md
 
   epic-3: backlog
-  3-1-build-sms-outreach-template-and-scheduling-workflow: backlog
-  3-2-build-email-outreach-templates-with-role-permissions: backlog
+  3-1-build-sms-outreach-template-and-scheduling-workflow: ready-for-dev  # 2026-04-17: regenerated after 1.12 framework landed; earlier impl discarded to rebuild on framework
+  3-2-build-email-outreach-templates-with-role-permissions: ready-for-dev
   3-3-implement-consent-opt-out-and-channel-preference-engine: backlog
   3-4-capture-candidate-responses-and-seriousness-inputs: backlog
   3-5-track-delivery-outcomes-and-retry-failed-sends: backlog

@@ -14,6 +14,7 @@ import AdminGovernanceConsole from "./AdminGovernanceConsole";
 import AiCostDashboard from "./AiCostDashboard";
 import SyncRunSummaryCard from "./SyncRunSummaryCard";
 import SchedulerStatusCard from "./SchedulerStatusCard";
+import ProviderHealthCard from "./ProviderHealthCard";
 import CollapsibleCard from "./CollapsibleCard";
 
 type AdminDashboardSearchParams = {
@@ -140,6 +141,9 @@ export default async function AdminDashboardPage({
           </CollapsibleCard>
           <CollapsibleCard title="AI Costs" defaultOpen>
             <AiCostDashboard />
+          </CollapsibleCard>
+          <CollapsibleCard title="Provider Health" defaultOpen>
+            <ProviderHealthCard />
           </CollapsibleCard>
         </div>
       </main>
