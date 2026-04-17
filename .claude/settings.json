@@ -1,4 +1,27 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__render__list_logs",
+      "mcp__render__list_services",
+      "mcp__render__list_deploys",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(git *)",
+      "Bash(git diff *)",
+      "Bash(git checkout *)",
+      "Bash(git apply *)",
+      "Bash(git status *)",
+      "Bash(rm *)",
+      "Bash(chmod *)",
+      "Bash(printf *)",
+      "Bash(kill *)",
+      "Bash(gh *)",
+      "Bash(mkdir *)",
+      "Edit(.claude/**)",
+      "Edit(/home/node/.claude/**)",
+      "Edit(~/.claude/**)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
