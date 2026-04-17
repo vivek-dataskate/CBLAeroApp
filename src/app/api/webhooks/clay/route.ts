@@ -32,9 +32,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ClayMapperConfig } from '@/modules/ingestion/clay-mapper';
 import { recordSyncFailure } from '@/modules/ingestion';
 import { getSupabaseAdminClient, isSupabaseConfigured } from '@/modules/persistence';
-import { WebhookProcessor } from '@/modules/providers';
+import {
+  WebhookProcessor,
+  BearerTokenWebhookAuth,
+} from '@/modules/providers';
 import {
   createClayWebhookReceiver,
+  extractClayRows,
   CLAY_WEBHOOK_SOURCE,
 } from '@/modules/providers/clay/clay-webhook-receiver';
 import {
@@ -125,7 +129,31 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── 2b. Shape pre-check ──
+  // ── 3. Auth validation (MUST run before assignee resolve + bucket seed) ──
+  // Normalize the Authorization header (P1 tolerances: lowercase `bearer`,
+  // leading/trailing whitespace) then delegate to `BearerTokenWebhookAuth`
+  // for constant-time comparison. Running auth here prevents unauthenticated
+  // requests from (a) driving JSON parse + shape-check CPU, (b) querying
+  // Supabase for the default assignee, and (c) creating orphan `sync_runs`
+  // bucket rows via the Phase 1 seed RPC. Code-review 2026-04-17 finding.
+  const rawAuth = (request.headers.get('authorization') ?? '').trim();
+  const match = rawAuth.match(/^(\S+)\s+(.+)$/);
+  let normalizedAuth = '';
+  if (match) {
+    const scheme = (match[1] ?? '').toLowerCase();
+    const token = (match[2] ?? '').trim();
+    if (scheme === 'bearer') normalizedAuth = `Bearer ${token}`;
+  }
+  const authValidator = new BearerTokenWebhookAuth(CLAY_WEBHOOK_SECRET);
+  const authValid = await authValidator.validate(rawBodyStr, { authorization: normalizedAuth });
+  if (!authValid) {
+    return NextResponse.json(
+      { error: { code: 'UNAUTHORIZED', message: 'Missing or invalid bearer token' } },
+      { status: 401 },
+    );
+  }
+
+  // ── 4. Shape pre-check ──
   // The framework's `extractEvents` can't distinguish "empty batch" from
   // "garbage shape" — both return []. We preserve the Story 2.8
   // UNRECOGNIZED_SHAPE 400 error code by parsing here and rejecting bodies
@@ -151,22 +179,11 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
+  // Use the framework extractor once here so `received` can report the true
+  // parsed-row count, independent of framework-accepted event count.
+  const extractedRows = extractClayRows(preParsed);
 
-  // ── 3. Auth via framework receiver (with P1 tolerance) ──
-  // Normalize the Authorization header before handing to the receiver so the
-  // P1 tolerances (lowercase `bearer`, leading/trailing whitespace) are
-  // preserved. `BearerTokenWebhookAuth` does constant-time compare on the
-  // token after the "Bearer " literal.
-  const rawAuth = (request.headers.get('authorization') ?? '').trim();
-  const match = rawAuth.match(/^(\S+)\s+(.+)$/);
-  let normalizedAuth = '';
-  if (match) {
-    const scheme = (match[1] ?? '').toLowerCase();
-    const token = (match[2] ?? '').trim();
-    if (scheme === 'bearer') normalizedAuth = `Bearer ${token}`;
-  }
-
-  // ── 4. Assignee resolution (fail-loud if not configured) ──
+  // ── 5. Assignee resolution (fail-loud if not configured) ──
   const { userId, error: assigneeError } = await resolveDefaultAssignee();
   if (!userId) {
     console.error('[ClayWebhook] Assignee resolution failed:', assigneeError);
@@ -176,7 +193,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── 5. Phase 1: seed the hourly bucket and capture its row id ──
+  // ── 6. Phase 1: seed the hourly bucket and capture its row id ──
   // Clay observability is an hourly bucket — see Story 2.8 P12 for the
   // three-phase pattern: (1) seed bucket with zeros to get id,
   // (2) process rows linking errors to the bucket id,
@@ -205,7 +222,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ── 6. Build framework pipeline: receiver + handler + processor ──
+  // ── 7. Build framework pipeline: receiver + handler + processor ──
   const mapperConfig: ClayMapperConfig = {
     emailField: CLAY_EMAIL_FIELD,
     phoneField: CLAY_PHONE_FIELD,
@@ -230,44 +247,13 @@ export async function POST(request: NextRequest) {
     maxPayloadBytes: MAX_PAYLOAD_BYTES,
   });
 
-  // ── 7. Receiver: auth + payload-shape fanout + webhook_events insert ──
+  // ── 8. Receiver: re-validates auth + extractEvents fanout + webhook_events insert ──
+  // All pre-conditions (auth, size, empty body, shape) are already enforced
+  // above, so the receiver should always return accepted=true here. The
+  // receiver still runs its own auth + extract pass as defense-in-depth.
+  // Rate-limit is disabled at the receiver (see createClayWebhookReceiver).
   const headers: Record<string, string> = { authorization: normalizedAuth };
   const received = await receiver.receive(rawBodyStr, headers);
-
-  if (received.statusCode === 401) {
-    return NextResponse.json(
-      { error: { code: 'UNAUTHORIZED', message: 'Missing or invalid bearer token' } },
-      { status: 401 },
-    );
-  }
-  if (received.statusCode === 400) {
-    // Receiver returns 400 for both unparseable JSON and pathological shapes.
-    // Differentiate via the reason string so callers keep the existing error
-    // codes.
-    const code = received.reason === 'Invalid JSON' ? 'BAD_JSON' : 'UNRECOGNIZED_SHAPE';
-    const message =
-      code === 'BAD_JSON'
-        ? 'Request body is not valid JSON'
-        : 'Body must be an object, an array of objects, or { rows: [...] }';
-    return NextResponse.json({ error: { code, message } }, { status: 400 });
-  }
-  if (received.statusCode === 413) {
-    return NextResponse.json(
-      {
-        error: {
-          code: 'PAYLOAD_TOO_LARGE',
-          message: `Payload exceeds ${MAX_PAYLOAD_BYTES} bytes (actual: ${rawBodyByteLen})`,
-        },
-      },
-      { status: 413 },
-    );
-  }
-  if (received.statusCode === 429) {
-    return NextResponse.json(
-      { error: { code: 'RATE_LIMITED', message: 'Too many requests' } },
-      { status: 429 },
-    );
-  }
 
   // ── Debug log (unchanged — temporarily enabled during rollout) ──
   if (CLAY_WEBHOOK_DEBUG) {
@@ -291,7 +277,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         status: 'ok',
-        received: 0,
+        received: extractedRows.length,
         accepted: 0,
         skipped: 0,
         errored: 0,
@@ -302,7 +288,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── 8. Processor drain — synchronous, in-request ──
+  // ── 9. Processor drain — synchronous, in-request ──
   // Clay batches are small (typically 1-10 rows). Drain loops until queue
   // empties. Defence: cap drain iterations in case handler somehow re-queues.
   const maxDrainIterations = events.length + 2;
@@ -311,7 +297,7 @@ export async function POST(request: NextRequest) {
     if (processed === 0) break;
   }
 
-  // ── 9. Collect per-row outcomes ──
+  // ── 10. Collect per-row outcomes ──
   const outcomes: RowOutcome[] = [];
   const counts = { accepted: 0, skipped: 0, errored: 0 };
   for (const event of store.getAllEvents()) {
@@ -327,6 +313,9 @@ export async function POST(request: NextRequest) {
     } else if (result?.status === 'failed' || result?.status === 'dead_letter') {
       rowStatus = 'error';
       error = result.error;
+      // AC 6 PRESERVE #1: operators grep for `[ClayWebhook]` to detect batch
+      // failures — emit the legacy prefix line before recordSyncFailure.
+      console.error('[ClayWebhook] Handler failure:', error ?? 'handler failure');
       // Handler-level failures: link to bucket for the 2-4b error drill-down.
       recordSyncFailure(
         'clay_enrichment',
@@ -342,17 +331,17 @@ export async function POST(request: NextRequest) {
     else counts.skipped += 1;
   }
 
-  // ── 10. Phase 3: increment the hourly bucket with final tally ──
+  // ── 11. Phase 3: increment the hourly bucket with final tally ──
   if (canWriteBucket) {
     const finalId = await incrementBucket(counts.accepted, counts.skipped, counts.errored);
     if (finalId && !bucketId) bucketId = finalId;
   }
 
-  // ── 11. Response (shape unchanged) ──
+  // ── 12. Response (shape unchanged from Story 2.8 contract) ──
   return NextResponse.json(
     {
       status: 'ok',
-      received: events.length,
+      received: extractedRows.length,
       accepted: counts.accepted,
       skipped: counts.skipped,
       errored: counts.errored,
