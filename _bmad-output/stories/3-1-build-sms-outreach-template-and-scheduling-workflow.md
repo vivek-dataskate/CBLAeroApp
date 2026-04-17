@@ -1,6 +1,13 @@
 # Story 3.1: Build SMS Outreach Template and Scheduling Workflow
 
-Status: ready-for-dev
+Status: in-progress  <!-- PR 1 (Task 1 — migration + seed RPC) complete 2026-04-17; PR 2 = Tasks 2-4, PR 3 = Tasks 5-8, PR 4 = Task 9 adversarial review -->
+
+## Change Log
+
+| Date       | PR  | Summary |
+|------------|-----|---------|
+| 2026-04-17 | PR 1 | Task 1 — Migration `2026-04-17-story-3-1-sms-outreach.sql` adds `sms_sends.provider_idempotency_key` + partial unique index, extends `sms_sends.status` CHECK with `blocked_cooldown`, adds `outreach_audit_log.trace_id/correlation_id/event_envelope`, creates RPCs `claim_due_sms_sends` / `insert_sms_sends_bulk` / `seed_sms_templates`, admin-only RLS on `sms_templates` writes + tenant-scoped RLS on `sms_sends` writes, service_role grants (no `anon`), `policy_registry` seed for `outreach_defaults/sms_default_contact_window` (Mon–Fri 08:00–20:00 America/Chicago). 12 PM-approved aviation-forward seed templates embedded. Mirror-updated `supabase/schema.sql` per Dual-Update Rule. |
+| 2026-04-17 | PR 1 (review patches) | Sonnet 4-layer adversarial review → 11 findings (1 critical, 3 high, 4 medium, 3 low). All F1–F8+F10 patched inline: **F1** `claim_due_sms_sends` now requires `p_tenant_id` (multi-tenant isolation — was claiming across all tenants); **F2** `schema.sql` now includes full grant section (Dual-Update Rule gap); **F3** `outreach_audit_log` grant to `authenticated` downgraded to SELECT-only (INSERT was dead letter with no RLS INSERT policy — audit writes are service_role-only); **F4** `sms_sends_read` + `sms_templates_read` SELECT policies replaced with tenant-scoped `USING (tenant_id = JWT claim)` (were USING true — cross-tenant PII exposure); **F5** `ON CONFLICT DO NOTHING` → `ON CONFLICT (tenant_id, template_key, version) DO NOTHING` (explicit target); **F6** bulk opt-out query scoped to tenant_id; **F7** required-field null guards before uuid casts in bulk RPC; **F8** `p_batch_size` upper bound (≤ 500) + lower bound (> 0) added to claim RPC; **F10** `policy_registry` seed added to `schema.sql`. Tests: 59 → 72 (+13 covering all patches). Full suite: 703/708 pass. Typecheck clean. Deferred: F9 (test parser fragility) + F11 (grant coverage gap) → PR 2. |
 
 > **Regenerated 2026-04-17** after Epic 1 was reopened for the Edge System Provider Framework (Stories 1-12 / 1-12a / 1-12b / 1-12c). The earlier in-session implementation was discarded so this story can be built cleanly on the framework. Scope unchanged from the original — dependencies updated to require provider framework integration (stub SMS provider extends `BaseProviderClient`, click-tracking endpoint uses `BaseWebhookReceiver`, provider registered in `ProviderRegistry`).
 
@@ -192,20 +199,22 @@ Each deferral MUST show as a TODO comment in code referencing the deferred story
 
 ## Tasks / Subtasks
 
-### Task 1: Schema + migration + seed RPC (AC 1, 2, 12)
+### Task 1: Schema + migration + seed RPC (AC 1, 2, 12) — ✅ DONE (PR 1, 2026-04-17)
 
-- [ ] 1.1 Write `supabase/migrations/2026-04-XX-story-3-1-sms-outreach.sql`:
+- [x] 1.1 Write `supabase/migrations/2026-04-17-story-3-1-sms-outreach.sql`:
   - `ALTER TABLE sms_sends ADD COLUMN IF NOT EXISTS provider_idempotency_key text` + partial unique index
-  - `ALTER TABLE outreach_audit_log ADD COLUMN IF NOT EXISTS trace_id text, correlation_id text, event_envelope jsonb`
-  - `CREATE OR REPLACE FUNCTION claim_due_sms_sends(...)` returning setof, FOR UPDATE SKIP LOCKED
-  - `CREATE OR REPLACE FUNCTION insert_sms_sends_bulk(p_rows jsonb)` — atomic batch with opt-out check
-  - `CREATE OR REPLACE FUNCTION seed_sms_templates(p_tenant_id, p_actor_id)` — 12 ON CONFLICT DO NOTHING inserts
-  - RLS update: `sms_templates` admin-write policy; `sms_sends` tenant-scoped R/W
-  - GRANTs to `authenticated` role only; NO `anon` grants
-  - NO row mutations on observability tables (dev-standards §3)
-- [ ] 1.2 Update `supabase/schema.sql` in the same PR (Dual-Update Rule §4.9)
-- [ ] 1.3 Write 12 seed template bodies — persuasive copy, ≤ 480 chars, `{{first_name}}` + `{{tracking_link}}` + "Reply STOP to opt out" + identifiable sender. Review with PM (Vivek) before coding.
-- [ ] 1.4 Unit tests on the seed RPC: idempotent re-run, new tenant gets 12 rows, existing tenant with edits preserves edits.
+  - `ALTER TABLE sms_sends` extended `sms_sends_status_valid` CHECK with `blocked_cooldown` (arch §10; lock table lands in 3-3)
+  - `ALTER TABLE outreach_audit_log ADD COLUMN IF NOT EXISTS trace_id text, correlation_id text, event_envelope jsonb` + `idx_outreach_audit_trace_id` partial index
+  - `CREATE OR REPLACE FUNCTION claim_due_sms_sends(p_batch_size, p_now)` returning setof, FOR UPDATE SKIP LOCKED, transitions `status='queued'`
+  - `CREATE OR REPLACE FUNCTION insert_sms_sends_bulk(p_rows jsonb)` — atomic batch with per-row opt-out check, 500-row cap
+  - `CREATE OR REPLACE FUNCTION seed_sms_templates(p_tenant_id, p_actor_id)` — 12 ON CONFLICT DO NOTHING inserts with PM-approved bodies + per-template variables[]
+  - RLS: `sms_templates_admin_insert/update` (role='admin' JWT check); `sms_sends_tenant_insert/update` (tenant_id JWT check)
+  - GRANTs to `service_role` (all) + `authenticated` (select/insert/update); NO `anon`
+  - NO row mutations on observability tables (dev-standards §3 — verified by test)
+  - `policy_registry` seed: `outreach_defaults/sms_default_contact_window` = Mon–Fri 08:00–20:00 America/Chicago
+- [x] 1.2 Update `supabase/schema.sql` in the same PR (Dual-Update Rule §4.9) — DDL mirrored for all three tables + RPCs + RLS policies; schema.sql grants absent by project convention (grants only live in migrations)
+- [x] 1.3 Write 12 seed template bodies — PM-approved 2026-04-17 (aviation-forward, customer-focused hero hooks, `{{sender_name}}` variable for identifiable sender, all ≤ 220 chars, all carry `{{first_name}}` + `{{tracking_link}}` + "Reply STOP to opt out"). Copy embedded in both migration and schema.sql RPCs.
+- [x] 1.4 Tests on the seed RPC + migration structure (`supabase/migrations/__tests__/story-3-1-sms-outreach.test.ts`): 59 tests covering schema deltas, RPCs (claim/bulk/seed), seed copy compliance (12 rows, 13-agenda enum, {{first_name}} + {{tracking_link}} + STOP line + CBL Aero brand, ≤480 chars, variables[] parity with body placeholders), RLS policies, grants (no anon), observability-guardrail (no UPDATE/DELETE on sync_runs/outreach_audit_log/etc.), policy_registry seed, idempotency (IF NOT EXISTS / ON CONFLICT / CREATE OR REPLACE / DROP POLICY IF EXISTS), Dual-Update Rule schema.sql parity (seed bodies byte-identical across both files).
 
 ### Task 2: Feature module scaffolding (AC 14)
 
@@ -386,16 +395,35 @@ Before starting:
 
 ### Agent Model Used
 
-_To be filled by the dev agent (claude-sonnet-4-6 or claude-opus-4-7 per bmad-dev-story configuration)._
+- PR 1 (Task 1 — migration + seed RPC + tests): `claude-opus-4-7` (2026-04-17).
 
 ### Debug Log References
 
-_(empty — story not yet started)_
+_(none — migration landed clean on first pass; 59 structural tests green on first run)._
 
 ### Completion Notes List
 
-_(empty — story not yet started)_
+**PR 1 / Task 1 (2026-04-17) — Migration + seed RPC**
+
+- Migration file: `supabase/migrations/2026-04-17-story-3-1-sms-outreach.sql` — schema deltas + 3 RPCs + RLS + grants + policy seed. Fully idempotent (IF NOT EXISTS / ON CONFLICT / CREATE OR REPLACE / DROP POLICY IF EXISTS guards on every mutating statement).
+- Schema.sql mirrored for all DDL (table columns, CHECK constraints, indexes, policies, RPCs) per Dual-Update Rule §4.9. Grants intentionally remain migration-only (project convention — `schema.sql` has no existing `GRANT` statements).
+- `sms_sends.status` CHECK now includes `blocked_cooldown` so Story 3-3 can land the `candidate_outreach_lock` table without a second CHECK migration (per arch §10 forward-compat).
+- Seed template copy PM-approved inline (hero-opening lines, aviation jargon — *hangar / line station / MRO / wheels up / flight line / ramp / comms check*, `{{sender_name}}` variable, TCPA-safe "Reply STOP to opt out"). 12 templates cover 11 distinct agendas (new_opportunity ×2; remaining 10 once each). Variables[] declared per-template so renderers can validate context.
+- 59 structural tests added. The test suite enforces the PR 1 contract as durable guardrails — re-wording any seed body that drops `{{first_name}}` / `{{tracking_link}}` / the STOP line / the CBL Aero brand, or that exceeds 480 chars, fails CI. Any schema.sql / migration drift on seed bodies also fails CI.
+- Typecheck clean. Lint: 0 errors (26 pre-existing unused-var warnings unchanged). Full vitest: 690/695 pass, 1 skipped, 4 pre-existing `tests/api/scheduler-api.spec.ts` failures (require a running dev server on :3000 — unrelated to this change).
+
+**Deferred to PR 2 / 3 / 4:**
+
+- PR 2 = Tasks 2, 3, 4 — outreach-engagement module scaffolding (`contracts/`, `application/`, `infrastructure/`), `StubSmsProvider`, `SmsDispatchJob` registered via `registerIngestionJobs()`.
+- PR 3 = Tasks 5, 6, 7, 8 — API routes (`/api/outreach/sms/send`, `/bulk-send`, `/filter-send`, `/api/outreach/track/[token]`), admin template CRUD UI, recruiter send UIs, funnel-event emission.
+- PR 4 = Task 9 — 4-layer adversarial review (Blind Hunter + Edge Case Hunter + Acceptance Auditor + SSRF/XSS) per Epic 2 retro A3 — required before Story 3-3 starts downstream work.
 
 ### File List
 
-_(empty — story not yet started)_
+**PR 1 (Task 1) — 2026-04-17**
+
+- `supabase/migrations/2026-04-17-story-3-1-sms-outreach.sql` (new)
+- `supabase/migrations/__tests__/story-3-1-sms-outreach.test.ts` (new — 59 tests)
+- `supabase/schema.sql` (modified — added `provider_idempotency_key` + index on `sms_sends`; extended `sms_sends_status_valid` CHECK with `blocked_cooldown`; added `trace_id/correlation_id/event_envelope` columns + `idx_outreach_audit_trace_id` on `outreach_audit_log`; added RLS policies `sms_sends_tenant_insert/update` + `sms_templates_admin_insert/update`; appended `claim_due_sms_sends` / `insert_sms_sends_bulk` / `seed_sms_templates` RPCs)
+- `_bmad-output/sprint-status.yaml` (modified — story 3-1 → `in-progress`, `last_updated` → 2026-04-17)
+- `_bmad-output/stories/3-1-build-sms-outreach-template-and-scheduling-workflow.md` (modified — Status → `in-progress`, Task 1 checkboxes marked, Change Log + Dev Agent Record + File List populated)

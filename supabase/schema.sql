@@ -489,6 +489,9 @@ create table if not exists cblaero_app.outreach_audit_log (
   content_hash text,
   compliance_check_passed boolean,
   blocked_reason text,
+  trace_id text,
+  correlation_id text,
+  event_envelope jsonb,
   created_at timestamptz not null default now(),
   constraint outreach_audit_log_pkey PRIMARY KEY (id),
   constraint outreach_audit_channel_valid CHECK ((channel = ANY (ARRAY['sms'::text, 'email'::text])))
@@ -496,6 +499,7 @@ create table if not exists cblaero_app.outreach_audit_log (
 
 create index if not exists idx_outreach_audit_candidate ON cblaero_app.outreach_audit_log USING btree (candidate_id);
 create index if not exists idx_outreach_audit_tenant_created ON cblaero_app.outreach_audit_log USING btree (tenant_id, created_at);
+create index if not exists idx_outreach_audit_trace_id ON cblaero_app.outreach_audit_log USING btree (trace_id) WHERE (trace_id IS NOT NULL);
 
 create table if not exists cblaero_app.policy_registry (
   id bigint generated always as identity not null,
@@ -661,6 +665,7 @@ create table if not exists cblaero_app.sms_sends (
   context_params jsonb not null default '{}'::jsonb,
   provider text,
   provider_message_id text,
+  provider_idempotency_key text,
   status text not null default 'pending'::text,
   delivery_attempt_count integer not null default 0,
   last_attempt_at timestamptz,
@@ -680,13 +685,14 @@ create table if not exists cblaero_app.sms_sends (
   constraint sms_sends_pkey PRIMARY KEY (id),
   constraint sms_sends_tracking_token_key UNIQUE (tracking_token),
   constraint sms_sends_response_type_valid CHECK (((response_type IS NULL) OR (response_type = ANY (ARRAY['opt_out'::text, 'affirmative'::text, 'negative'::text, 'freeform'::text])))),
-  constraint sms_sends_status_valid CHECK ((status = ANY (ARRAY['pending'::text, 'queued'::text, 'sent'::text, 'delivered'::text, 'failed'::text, 'bounced'::text, 'undeliverable'::text, 'blocked_opt_out'::text, 'deferred_window'::text]))),
+  constraint sms_sends_status_valid CHECK ((status = ANY (ARRAY['pending'::text, 'queued'::text, 'sent'::text, 'delivered'::text, 'failed'::text, 'bounced'::text, 'undeliverable'::text, 'blocked_opt_out'::text, 'blocked_cooldown'::text, 'deferred_window'::text]))),
   constraint sms_sends_template_id_fkey FOREIGN KEY (template_id) REFERENCES cblaero_app.sms_templates(id)
 );
 
 create index if not exists idx_sms_sends_deferred_window ON cblaero_app.sms_sends USING btree (tenant_id, contact_window_deferred_until) WHERE (status = 'deferred_window'::text);
 create index if not exists idx_sms_sends_pending_due ON cblaero_app.sms_sends USING btree (tenant_id, scheduled_for) WHERE (status = 'pending'::text);
 create index if not exists idx_sms_sends_tenant_candidate_status ON cblaero_app.sms_sends USING btree (tenant_id, candidate_id, status);
+create UNIQUE index if not exists idx_sms_sends_provider_idempotency_key ON cblaero_app.sms_sends USING btree (tenant_id, provider_idempotency_key) WHERE (provider_idempotency_key IS NOT NULL);
 
 create table if not exists cblaero_app.sms_templates (
   id uuid not null default gen_random_uuid(),
@@ -836,12 +842,39 @@ create policy schedule_runs_read on cblaero_app.schedule_runs
   using (true);
 
 create policy sms_sends_read on cblaero_app.sms_sends
-  for select
-  using (true);
+  for select to authenticated
+  using ((tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text)));
+
+create policy sms_sends_tenant_insert on cblaero_app.sms_sends
+  for insert to authenticated
+  with check ((tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text)));
+
+create policy sms_sends_tenant_update on cblaero_app.sms_sends
+  for update to authenticated
+  using ((tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text)))
+  with check ((tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text)));
 
 create policy sms_templates_read on cblaero_app.sms_templates
-  for select
-  using (true);
+  for select to authenticated
+  using ((tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text)));
+
+create policy sms_templates_admin_insert on cblaero_app.sms_templates
+  for insert to authenticated
+  with check (
+    (tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text))
+    and (((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'role'::text) = 'admin'::text)
+  );
+
+create policy sms_templates_admin_update on cblaero_app.sms_templates
+  for update to authenticated
+  using (
+    (tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text))
+    and (((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'role'::text) = 'admin'::text)
+  )
+  with check (
+    (tenant_id = ((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'tenant_id'::text))
+    and (((current_setting('request.jwt.claims'::text, true))::jsonb ->> 'role'::text) = 'admin'::text)
+  );
 
 -- ============================================================
 -- Functions / RPCs
@@ -2262,4 +2295,293 @@ begin
         candidate_id = excluded.candidate_id,
         metadata = excluded.metadata;
 end; $function$;
+
+-- ============================================================
+-- SMS Outreach RPCs (Story 3.1 — PR 1)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION cblaero_app.claim_due_sms_sends(
+  p_tenant_id  text,
+  p_batch_size integer default 50,
+  p_now        timestamptz default now()
+)
+RETURNS setof cblaero_app.sms_sends
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = cblaero_app
+AS $function$
+begin
+  if p_tenant_id is null or length(p_tenant_id) = 0 then
+    raise exception 'claim_due_sms_sends: p_tenant_id is required';
+  end if;
+  if p_batch_size is null or p_batch_size <= 0 then
+    raise exception 'claim_due_sms_sends: p_batch_size must be > 0';
+  end if;
+  if p_batch_size > 500 then
+    raise exception 'claim_due_sms_sends: p_batch_size % exceeds 500', p_batch_size;
+  end if;
+
+  return query
+  update cblaero_app.sms_sends s
+  set
+    status                 = 'queued',
+    delivery_attempt_count = coalesce(s.delivery_attempt_count, 0) + 1,
+    last_attempt_at        = p_now
+  where s.id in (
+    select id
+    from   cblaero_app.sms_sends
+    where  tenant_id     = p_tenant_id
+      and  status        = 'pending'
+      and  scheduled_for <= p_now
+    order  by scheduled_for asc
+    for update skip locked
+    limit  p_batch_size
+  )
+  returning s.*;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION cblaero_app.insert_sms_sends_bulk(
+  p_rows jsonb
+)
+RETURNS table(inserted integer, skipped integer)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = cblaero_app
+AS $function$
+declare
+  v_inserted integer := 0;
+  v_skipped  integer := 0;
+  v_row      jsonb;
+  v_candidate_id uuid;
+  v_opted_in boolean;
+begin
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' then
+    raise exception 'insert_sms_sends_bulk: p_rows must be a JSONB array';
+  end if;
+  if jsonb_array_length(p_rows) > 500 then
+    raise exception 'insert_sms_sends_bulk: batch size % exceeds 500', jsonb_array_length(p_rows);
+  end if;
+
+  for v_row in select * from jsonb_array_elements(p_rows)
+  loop
+    if (v_row ->> 'candidate_id') is null or
+       (v_row ->> 'tenant_id') is null or
+       (v_row ->> 'template_id') is null or
+       (v_row ->> 'template_version') is null or
+       (v_row ->> 'scheduled_for') is null then
+      v_skipped := v_skipped + 1;
+      continue;
+    end if;
+
+    v_candidate_id := (v_row ->> 'candidate_id')::uuid;
+
+    select coalesce(sms_opted_in, true)
+      into v_opted_in
+      from cblaero_app.candidate_channel_preferences
+     where candidate_id = v_candidate_id
+       and tenant_id    = v_row ->> 'tenant_id'
+     limit 1;
+
+    if coalesce(v_opted_in, true) = false then
+      v_skipped := v_skipped + 1;
+      continue;
+    end if;
+
+    insert into cblaero_app.sms_sends (
+      tenant_id, campaign_id, candidate_id, template_id, template_version,
+      rendered_body, rendered_body_hash, context_params,
+      status, scheduled_for, sender_user_id, tracking_token, tracking_url,
+      provider_idempotency_key
+    )
+    values (
+      v_row ->> 'tenant_id',
+      nullif(v_row ->> 'campaign_id', '')::uuid,
+      v_candidate_id,
+      (v_row ->> 'template_id')::uuid,
+      (v_row ->> 'template_version')::integer,
+      v_row ->> 'rendered_body',
+      v_row ->> 'rendered_body_hash',
+      coalesce(v_row -> 'context_params', '{}'::jsonb),
+      'pending',
+      (v_row ->> 'scheduled_for')::timestamptz,
+      v_row ->> 'sender_user_id',
+      v_row ->> 'tracking_token',
+      v_row ->> 'tracking_url',
+      v_row ->> 'provider_idempotency_key'
+    );
+
+    v_inserted := v_inserted + 1;
+  end loop;
+
+  return query select v_inserted, v_skipped;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION cblaero_app.seed_sms_templates(
+  p_tenant_id text,
+  p_actor_id  text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = cblaero_app
+AS $function$
+declare
+  v_seed jsonb;
+  v_seeds jsonb := jsonb_build_array(
+    jsonb_build_object(
+      'agenda','new_opportunity', 'key','new_opportunity_v1',
+      'name','New Opportunity — Primary',
+      'body','{{first_name}}, your certifications deserve a better seat. {{sender_name}} at CBL Aero — a {{job_title}} role at {{client_company}} is open with shift + relo on the table. {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','job_title','client_company','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','new_opportunity', 'key','new_opportunity_warm',
+      'name','New Opportunity — Warm Reachout',
+      'body','{{first_name}}, your hangar experience matches a role I''m working. {{sender_name}} at CBL Aero — {{job_title}} opening, 90-sec brief: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','job_title','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','availability_check', 'key','availability_check_v1',
+      'name','Availability Check',
+      'body','{{first_name}}, ready for your next line station or MRO gig? {{sender_name}} at CBL Aero — 2-question update keeps you on my shortlist: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','job_followup', 'key','job_followup_v1',
+      'name','Job Follow-up',
+      'body','{{first_name}}, the {{job_title}} seat is still open and the hiring manager is asking about you. {{sender_name}} at CBL Aero — confirm interest today: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','job_title','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','submission_followup', 'key','submission_followup_v1',
+      'name','Submission Follow-up',
+      'body','{{first_name}}, your file is airborne at {{client_company}} — response typically inside 48 hrs. {{sender_name}} at CBL Aero — status tracker: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','client_company','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','interview_schedule', 'key','interview_schedule_v1',
+      'name','Interview Schedule',
+      'body','{{first_name}}, {{client_company}} cleared you to interview. {{sender_name}} at CBL Aero — pick a slot before the hangar fills up: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','client_company','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','interview_reminder', 'key','interview_reminder_v1',
+      'name','Interview Reminder',
+      'body','{{first_name}}, wheels up on your interview at {{interview_time}}. CBL Aero — prep checklist + join link: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','interview_time','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','bgv_initiation', 'key','bgv_initiation_v1',
+      'name','Background Verification Start',
+      'body','{{first_name}}, you cleared pre-flight — background verification is next. {{sender_name}} at CBL Aero — 5-min consent form: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','offer_extended', 'key','offer_extended_v1',
+      'name','Offer Extended',
+      'body','{{first_name}}, offer on the flight line for the {{job_title}} role. {{sender_name}} at CBL Aero — review + e-sign: {{tracking_link}} Want to talk it through? Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','job_title','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','onboarding', 'key','onboarding_v1',
+      'name','Onboarding Welcome',
+      'body','{{first_name}}, welcome to the ramp! {{sender_name}} at CBL Aero — day-1 checklist + paperwork queued here: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','reengagement', 'key','reengagement_v1',
+      'name','Re-engagement',
+      'body','{{first_name}}, been a while since you last taxied with us. {{sender_name}} at CBL Aero — new MRO + line maintenance roles may fit better now: {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','tracking_link')
+    ),
+    jsonb_build_object(
+      'agenda','general', 'key','general_v1',
+      'name','General Outreach',
+      'body','{{first_name}}, quick comms check from CBL Aero. {{sender_name}} here — have a minute? {{tracking_link}} Reply STOP to opt out.',
+      'variables', jsonb_build_array('first_name','sender_name','tracking_link')
+    )
+  );
+begin
+  if p_tenant_id is null or length(p_tenant_id) = 0 then
+    raise exception 'seed_sms_templates: p_tenant_id is required';
+  end if;
+
+  for v_seed in select * from jsonb_array_elements(v_seeds)
+  loop
+    insert into cblaero_app.sms_templates (
+      tenant_id, agenda, name, template_key, body, variables,
+      version, status, created_by, updated_by
+    )
+    values (
+      p_tenant_id,
+      v_seed ->> 'agenda',
+      v_seed ->> 'name',
+      v_seed ->> 'key',
+      v_seed ->> 'body',
+      v_seed -> 'variables',
+      1,
+      'active',
+      coalesce(p_actor_id, 'system'),
+      coalesce(p_actor_id, 'system')
+    )
+    on conflict (tenant_id, template_key, version) do nothing;
+  end loop;
+end;
+$function$;
+
+-- ============================================================
+-- Grants (Story 3.1 PR 1 — mirrors migration 2026-04-17-story-3-1-sms-outreach.sql)
+-- Dual-Update Rule §4.9: grant statements must be present in schema.sql
+-- so a fresh bootstrap has the same privilege surface as a migrated DB.
+-- outreach_audit_log: SELECT only for authenticated (audit writes are
+-- service_role-only via server-side repositories — no RLS INSERT policy).
+-- ============================================================
+
+grant select, insert, update on cblaero_app.sms_templates      to authenticated;
+grant all                    on cblaero_app.sms_templates      to service_role;
+
+grant select, insert, update on cblaero_app.sms_sends           to authenticated;
+grant all                    on cblaero_app.sms_sends           to service_role;
+
+grant select                 on cblaero_app.outreach_audit_log  to authenticated;
+grant all                    on cblaero_app.outreach_audit_log  to service_role;
+
+grant execute on function cblaero_app.claim_due_sms_sends(text, integer, timestamptz) to service_role;
+grant execute on function cblaero_app.insert_sms_sends_bulk(jsonb)                   to service_role;
+grant execute on function cblaero_app.seed_sms_templates(text, text)                 to service_role;
+
+-- ============================================================
+-- Policy registry seed (Story 3.1 PR 1 — AC 7)
+-- Default SMS contact window (Mon–Fri 08:00–20:00 America/Chicago).
+-- Idempotent via NOT EXISTS guard.
+-- ============================================================
+
+insert into cblaero_app.policy_registry (family, key, description) values
+  ('outreach_defaults', 'sms_default_contact_window',
+   'Default SMS contact window used when candidate_channel_preferences.contact_windows is null/empty (AC 7)')
+on conflict (family, key) do nothing;
+
+insert into cblaero_app.policy_versions (policy_id, value, effective_from, created_by_actor_id)
+select r.id,
+       jsonb_build_object(
+         'timezone', 'America/Chicago',
+         'windows', jsonb_build_array(
+           jsonb_build_object('day','mon','start','08:00','end','20:00'),
+           jsonb_build_object('day','tue','start','08:00','end','20:00'),
+           jsonb_build_object('day','wed','start','08:00','end','20:00'),
+           jsonb_build_object('day','thu','start','08:00','end','20:00'),
+           jsonb_build_object('day','fri','start','08:00','end','20:00')
+         )
+       ),
+       now(),
+       'system'
+from   cblaero_app.policy_registry r
+where  r.family = 'outreach_defaults'
+  and  r.key    = 'sms_default_contact_window'
+  and  not exists (
+    select 1 from cblaero_app.policy_versions pv
+    where  pv.policy_id = r.id
+  );
 
