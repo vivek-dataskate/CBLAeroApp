@@ -150,6 +150,58 @@ All dashboard pages (`/dashboard/**`) follow a unified design system documented 
 
 This design system is enforced via development-standards.md §27 and validated during code reviews for any `src/app/dashboard/` changes.
 
+### LinkedIn RPS Funnel Dashboards (North-Star KPI Surfaces)
+
+These are **required screens**, not optional. They surface the PRD north-star KPI (beat the LinkedIn RPS recruiter funnel: 100 InMails → 28 responses → 14 submissions → 0.5 closures @ $200/mo) to the two personas that own the outcome: Mike (recruiter) and Elena (delivery head) / Alex (admin).
+
+**Screen A: Recruiter Funnel Dashboard (`/dashboard/recruiter/funnel`)**
+
+Primary user: Mike. Primary question: "Am I beating my old LinkedIn RPS numbers this month?"
+
+Layout (top to bottom):
+
+1. **Header strip** — "This month vs. LinkedIn RPS baseline" with a single-glance verdict: ✅ Beating baseline / ⚠️ Matching baseline / ❌ Below baseline. Show current month-to-date with days-elapsed context.
+2. **Four-stage funnel viz** — horizontal funnel with four stages (Outreach → Responses → Submissions → Closures). Each stage shows:
+   - Current count (MTD)
+   - LinkedIn RPS baseline count (dimmed line behind the current bar)
+   - Conversion rate from prior stage (e.g., "42% response rate" with baseline "28%" in small text below)
+   - Delta vs. baseline rate in green (positive) or red (negative)
+3. **Trend sparklines** — four small charts (one per stage), trailing 90 days, weekly granularity. Baseline shown as a horizontal dashed line.
+4. **Cost-per-closure card** — CBLAeroApp effective cost-per-closure (fully loaded) vs. $200/0.5 = $400/closure LinkedIn baseline. Flag if above baseline.
+5. **"What's moving my funnel" panel** — top 3 features/epics attributed to this month's lift (driven by `source_epic` attribution in funnel events). E.g., "Epic 3 multi-channel outreach: +12% response rate."
+6. **Micro-actions** — "Send more outreach" / "Review pending responses" shortcuts, wired to next-best-action in the recruiter's action stream.
+
+Empty state (new recruiter, <30 days of data): show baseline + a partial funnel with "Need 30 days of data for trend comparison." Do not show distorted conversion rates on <100 outreach events.
+
+**Screen B: Admin Consolidated Funnel Dashboard (`/dashboard/admin/funnel`)**
+
+Primary users: Elena (delivery head), Alex (admin), David (CEO). Primary question: "Is the team beating LinkedIn RPS on average, and who needs help?"
+
+Layout (top to bottom):
+
+1. **Tenant rollup header** — total closures MTD / projected monthly, total cost / recruiter, total lift vs. baseline (e.g., "3.2× baseline closures across 12 recruiters").
+2. **Consolidated four-stage funnel** — same viz as recruiter screen but aggregated across all recruiters; click any stage to drill into per-recruiter breakdown.
+3. **Recruiter leaderboard** — sortable table: recruiter name, MTD closures, response rate, submission rate, cost-per-closure, baseline-beat badge. Default sort: closures descending. Below-baseline recruiters flagged with a coaching icon.
+4. **Cost rollup** — total platform cost per recruiter (CBLAeroApp platform + integrations + AI per recruiter) vs. $200/mo LinkedIn baseline. Goal: ≤$200 fully loaded.
+5. **Baseline-breach alerts inbox** — list of recruiters whose trailing-30-day funnel fell below baseline for 7+ consecutive days (see Epic 10 Story 10.7). Each row has a "Schedule 1:1" CTA.
+6. **Feature attribution rollup** — same "what's moving the funnel" panel but at the tenant level — which epics/features are driving the most lift across all recruiters.
+
+**Screen C: Baseline Configuration (`/dashboard/admin/funnel/baseline`)**
+
+Primary user: Alex (admin) or David (CEO). Used rarely (quarterly review). Shows current LinkedIn RPS baseline values (outreach=100, response=28%, submission=50%, closure=3.6%, cost=$200), their effective_from date, and an edit form that creates a new versioned baseline. Historical dashboard views automatically use the baseline that was effective at the time of the events being displayed.
+
+**Design principles across all three screens:**
+
+- Follow the dashboard visual design system above (white, sticky header, emerald accent, `max-w-6xl`, `rounded-xl` cards).
+- Every baseline comparison must label the baseline explicitly ("vs. LinkedIn RPS 28%") so a new recruiter who never used RPS understands the comparison.
+- Funnel visualizations must remain legible on mobile — reduce to stacked vertical bars below 768px.
+- Every dashboard cell is drill-able: clicking a stage filters the recruiter's action stream to candidates at that stage.
+- Never show a funnel rate computed from <30 events in the denominator — show "insufficient data" instead, to avoid misleading early-month percentages.
+
+**Relationship to existing "Action Stream":**
+
+The funnel dashboard is the measurement layer; the action stream (Design Opportunity #1 above) is the working layer. Clicking a funnel stage on the recruiter dashboard filters the action stream to that stage — they are not separate apps.
+
 ### Critical Assumptions Requiring Tier 1 Validation
 
 | #   | Assumption                                   | Risk                                                       | Validation                                           |

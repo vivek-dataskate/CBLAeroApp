@@ -5,7 +5,7 @@ Source of truth: `docs/planning_artifacts/architecture.md` -> `Stack-Mapped Impl
 ## Gate Summary
 
 - Gate decision: `PENDING`
-- Last updated: `2026-03-30`
+- Last updated: `2026-04-17`
 - Release target: `TBD`
 - Program owner: `TBD`
 
@@ -71,6 +71,15 @@ Source of truth: `docs/planning_artifacts/architecture.md` -> `Stack-Mapped Impl
 | T-07 | Testing Gate | Pass synthetic Tier 3 pilot load profile (200 recruiters, 1-2M records, re-verification sweep, queue catch-up) | TBD | TBD | NOT-STARTED | TBD |  |
 | T-08 | Testing Gate | Pass gold-dataset scoring regression gate before prompt/model promotion | TBD | TBD | NOT-STARTED | TBD |  |
 | T-09 | Testing Gate | Pass scheduler correctness tests for due-run claiming, no double dispatch, pause/resume semantics, and versioned schedule changes | TBD | TBD | NOT-STARTED | TBD |  |
+| F-00 | Funnel Telemetry (Epic 10) | Complete Story 10.0 prep spike: inventory all existing candidate-workflow code paths that will need funnel-event retrofit (`_bmad-output/epic-10-retrofit-inventory.md`) | Vivek | 2026 Week 5 | NOT-STARTED | TBD | Must complete before F-01 starts |
+| F-01 | Funnel Telemetry (Epic 10) | Ship canonical funnel event schema and emission contract (FR76) across all candidate-workflow modules; idempotent persistence to `funnel_events` | Vivek | 2026 Week 6 | NOT-STARTED | TBD | Blocks F-02..F-07 |
+| F-02 | Funnel Telemetry (Epic 10) | Ship funnel event store + query API (Story 10.2) with pre-aggregated materialized views | Vivek | 2026 Week 7 | NOT-STARTED | TBD | Blocks F-03..F-07 |
+| F-03 | Funnel Telemetry (Epic 10) | Ship versioned LinkedIn RPS baseline configuration (Story 10.3, FR79a) | Vivek | 2026 Week 7 | NOT-STARTED | TBD |  |
+| F-04 | Funnel Telemetry (Epic 10) | Ship recruiter funnel dashboard at `/dashboard/recruiter/funnel` with baseline comparison (FR77) | Vivek | 2026 Week 8 | NOT-STARTED | TBD |  |
+| F-05 | Funnel Telemetry (Epic 10) | Ship admin consolidated funnel dashboard at `/dashboard/admin/funnel` with leaderboard and cost rollup (FR78) | Vivek | 2026 Week 9 | NOT-STARTED | TBD |  |
+| F-06 | Funnel Telemetry (Epic 10) | Retrofit emission of funnel events into all existing Epic 2/3/4/9 code paths per Story 10.0 inventory (every candidate state transition must emit) | Vivek | 2026 Week 9 | NOT-STARTED | TBD | Parallel to F-04/F-05 once F-01 ships |
+| F-07 | Funnel Telemetry (Epic 10) | Ship baseline-breach alerting to delivery head via Teams (FR79) with 7-day cooldown | Vivek | 2026 Week 10 | NOT-STARTED | TBD |  |
+| F-08 | Funnel Telemetry (Epic 10) | Validate north-star KPI dashboards against LinkedIn RPS baseline (100/28/14/0.5 @ $200/mo) with at least 30 days of pilot data before Week 10 Automation ROI gate | Vivek | 2026 Week 10 | NOT-STARTED | TBD | Week 10 gate dependency |
 
 ## Accepted MVP Risks (Track and Monitor)
 
@@ -82,6 +91,6 @@ Source of truth: `docs/planning_artifacts/architecture.md` -> `Stack-Mapped Impl
 
 ## Gate Decision Rule
 
-- `PASS`: All critical items complete (`R-01..R-06`, `D-01..D-06`, `I-01..I-04`, `M-01..M-08`, `S-01..S-04`, `O-01..O-09`, `T-01..T-09`).
+- `PASS`: All critical items complete (`R-01..R-06`, `D-01..D-06`, `I-01..I-04`, `M-01..M-08`, `S-01..S-04`, `O-01..O-09`, `T-01..T-09`, `F-00..F-08`).
 - `CONCERNS`: Non-critical items pending with owner and target date assigned.
-- `FAIL`: Any critical security, tenant isolation, audit integrity, or core messaging item incomplete.
+- `FAIL`: Any critical security, tenant isolation, audit integrity, core messaging, or **funnel telemetry (F-01, F-06, F-08)** item incomplete — F-01 (emission contract), F-06 (retrofit), and F-08 (validation against baseline) are north-star KPI measurement prerequisites; Week 10 Automation ROI gate cannot be evaluated without them.

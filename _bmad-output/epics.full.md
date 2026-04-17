@@ -99,6 +99,11 @@ FR72: Candidate can update availability status and seriousness inputs (tool owne
 FR73: Candidate can view application status (applied -> screening -> interview -> offer -> placement -> started).
 FR74: Candidate can receive status notifications for interview scheduled, interview attended/missed, offer sent, offer decision, and start-date confirmation.
 FR75: Candidate can download offer letter and other documents from portal.
+FR76: System emits canonical funnel events (outreach_sent, response_received, submitted_to_client, closed_won, closed_lost) synchronously with state transitions, with tenant_id, recruiter_id, client_id, candidate_id, channel, source_epic, source_story, occurred_at, recorded_at, and idempotency key.
+FR77: Recruiter can view a dashboard of their own 4-stage funnel (outreach -> response -> submission -> closure) compared to LinkedIn RPS baseline (100 / 28 / 14 / 0.5 @ $200/mo) with trailing-30-day and trailing-90-day counts, conversion rates, cost-per-closure, and 90-day trend sparklines.
+FR78: Admin and delivery-head roles can view a consolidated funnel dashboard across all recruiters with a leaderboard, per-recruiter baseline-beat status, cost-per-recruiter rollup vs. $200/mo baseline, and drill-down into individual recruiter dashboards.
+FR79: System raises a baseline-breach alert when any recruiter's trailing-30-day rate (response, submission, or closure) falls below the LinkedIn RPS baseline for 7 consecutive days, delivered via Teams to the delivery head, deduplicated at one alert per recruiter per stage per 7 days.
+FR79a: Admin can update LinkedIn RPS baseline configuration through a versioned admin UI; historical dashboard views use the baseline effective at the time of the events being displayed.
 
 ### NonFunctional Requirements
 
@@ -167,6 +172,7 @@ NFR38: Horizontal scaling supports independently scaled processing services with
 
 FR1: Epic 2 - Candidate ingestion from recruiter CSV uploads
 FR1a: Epic 2 - Initial 1M-record migration path
+FR1b: Epic 2 - Candidate ingestion from PDF resume uploads with LLM extraction
 FR2: Epic 2 - ATS and recruiter inbox sync ingestion
 FR3: Epic 2 - Candidate profile storage and indexing
 FR4: Epic 2 - Deterministic deduplication and manual review routing
@@ -241,53 +247,87 @@ FR72: Epic 9 - Candidate self-service availability and seriousness updates
 FR73: Epic 9 - Candidate application status visibility
 FR74: Epic 9 - Candidate lifecycle status notifications
 FR75: Epic 9 - Offer/document download in candidate portal
+FR76: Epic 10 - Canonical funnel event emission at all candidate-workflow state transitions
+FR77: Epic 10 - Recruiter funnel dashboard with LinkedIn RPS baseline comparison
+FR78: Epic 10 - Admin consolidated funnel dashboard with leaderboard and cost rollup
+FR79: Epic 10 - Baseline-breach alerting to delivery head
+FR79a: Epic 10 - Versioned LinkedIn RPS baseline configuration
 
 ## Epic List
+
+> **North-Star Alignment:** Every epic below is tagged with the **LinkedIn RPS funnel lever(s)** it moves — Outreach / Response / Submission / Closure / Cost / Recruiter-time — per the PRD north-star KPI (Section: Success Criteria → North-Star KPI: Beat LinkedIn RPS Recruiter Funnel). Epic 10 is the dedicated funnel telemetry + dashboard epic that measures all other epics against the baseline.
 
 ### Epic 1: Platform Foundation, Access, and Tenant Security
 
 Establish the deployable baseline with enterprise authentication, role-safe access boundaries, and tenant/data-residency controls so all future epics can build safely.
 **FRs covered:** FR26, FR41, FR42, FR43, FR44, FR45, FR70
+**Funnel lever:** Foundational — enables all funnel-moving work; does not move funnel directly.
 
 ### Epic 2: Candidate Data Ingestion and Profile Lifecycle
 
 Enable trusted candidate ingestion from migration, recruiter uploads, ATS, and inbox channels with deduplication, indexing, and profile lifecycle operations.
 **FRs covered:** FR1, FR1a, FR2, FR3, FR4, FR5, FR7, FR68
+**Funnel lever:** Outreach-sent volume (larger, cleaner candidate pool → more viable touches) + Recruiter-time reduction (automated ingestion replaces manual sourcing).
 
 ### Epic 3: Outreach Orchestration and Candidate Engagement
 
 Enable compliant outbound communication and inbound candidate response handling for single-send and bulk campaign operations.
 **FRs covered:** FR8, FR9, FR10, FR11, FR12, FR13, FR15, FR16, FR17
+**Funnel lever:** Outreach-sent volume + Response rate (the primary funnel stages — higher-quality, multi-channel outreach beats InMail response rates).
 
 ### Epic 4: Recruiter Delivery Workflow and Offer Management
 
 Enable recruiters to intake jobs, operate daily pipelines, move candidates through journey states, and execute offer workflows.
 **FRs covered:** FR18, FR19, FR21, FR22, FR23, FR24, FR25, FR56
+**Funnel lever:** Submission rate + Closure rate (streamlined response→submission→offer workflow) + Recruiter-time reduction.
 
 ### Epic 5: Matching Intelligence and Domain Qualification
 
 Provide transparent ranking, readiness scoring, and aviation-specific qualification intelligence that guides recruiter action.
 **FRs covered:** FR20, FR28, FR29, FR30, FR31, FR32, FR33, FR34, FR35, FR57, FR58, FR59, FR61
+**Funnel lever:** Response rate + Submission rate (better-matched candidates respond more and convert to submissions more).
 
 ### Epic 6: Collaboration and Notification Workflows
 
 Deliver role-aware notifications and action cards so recruiters and delivery heads can respond quickly without dashboard thrash.
 **FRs covered:** FR36, FR37, FR38, FR39, FR40
+**Funnel lever:** Recruiter-time reduction + Closure velocity (faster response-to-action cycle → higher close rate per unit time).
 
 ### Epic 7: Metrics, Cost Governance, and Forecasting
 
 Provide operational, financial, and performance insights with thresholding and forecasting for recruiter and leadership decision-making.
 **FRs covered:** FR27, FR46, FR47, FR48, FR49, FR50, FR51, FR52, FR54, FR55
+**Funnel lever:** Cost-per-recruiter + All-stage visibility. Complements Epic 10 (which owns the LinkedIn RPS baseline comparison specifically).
 
 ### Epic 8: Compliance, Reliability, and Operational Guardrails
 
 Implement immutable auditability, retention/deletion obligations, resilience controls, and security monitoring to keep operations compliant and trustworthy.
 **FRs covered:** FR6, FR14, FR53, FR60, FR62, FR63, FR64, FR65, FR66, FR67, FR69
+**Funnel lever:** Foundational — protects funnel-data integrity and trust; does not move funnel directly.
 
 ### Epic 9: Candidate Self-Service Portal Experience
 
 Enable candidates to securely self-serve profile, status, and document workflows from token-based portal access.
 **FRs covered:** FR71, FR72, FR73, FR74, FR75
+**Funnel lever:** Response rate + Closure rate (candidate-driven status/availability updates accelerate response and reduce drop-off).
+
+### Epic 10: Funnel Telemetry & LinkedIn RPS Benchmark Dashboards
+
+**North-star epic.** Capture every candidate workflow event as funnel telemetry and render per-recruiter + admin-consolidated dashboards that compare live performance against the LinkedIn RPS baseline defined in the PRD. This epic is the measurement system for all other epics' funnel claims — no epic's funnel-lever assertion can be validated without Epic 10.
+
+**Scope:**
+- Funnel event pipeline: emit and persist `outreach_sent`, `response_received`, `submitted_to_client`, `closed_won`, `closed_lost` with `recruiter_id`, `client_id`, `candidate_id`, `channel`, `timestamp`, `tenant_id`.
+- Recruiter dashboard: per-recruiter funnel (4 stages) vs. LinkedIn RPS baseline, response/submission/closure rates, trend over trailing 30/90 days, cost-per-closure.
+- Admin/delivery-head dashboard: consolidated funnel across all recruiters, leaderboard, cost-per-recruiter rollup, baseline-beat status per recruiter.
+- Baseline config: LinkedIn RPS baseline values (100 / 28 / 14 / 0.5 @ $200/mo) stored in config with versioning so baseline can evolve.
+- Attribution: every event traceable to the triggering epic/feature for lift analysis.
+
+**FRs covered:** FR76 (funnel event emission), FR77 (recruiter funnel dashboard), FR78 (admin consolidated funnel dashboard), FR79 (baseline-breach alerting), FR79a (versioned baseline configuration).
+
+**Funnel lever:** All stages (visibility is the prerequisite for measurement and optimization). Unlocks validation of Epics 2-9 against the north-star KPI.
+
+**Dependencies:** Epic 1 (auth/tenant), Epic 2 (candidate identity), Epic 3 (first event emitters — outreach_sent), Epic 4 (response/submission/closure emitters).
+**Priority:** P0 for MVP Tier 2 (Weeks 5-10) — must be operational before Week 10 Automation ROI gate so ROI can be measured against baseline.
 
 ## Story Sizing Baseline (One-Week Ideal, Two-Week Max)
 
@@ -1397,3 +1437,154 @@ So that I can review and act on hiring paperwork.
 **When** candidate requests a download
 **Then** only permitted documents are served with integrity checks
 **And** every document access is audited with actor, timestamp, and document identifier
+
+## Epic 10: Funnel Telemetry & LinkedIn RPS Benchmark Dashboards
+
+**North-star measurement epic.** Makes every other epic's funnel claims measurable against the LinkedIn RPS baseline. See PRD → Success Criteria → North-Star KPI.
+
+### Story Sequencing (MUST follow this order)
+
+Epic 10 stories have hard dependencies. Infrastructure stories (10.1–10.3) MUST ship before UI/alerting stories (10.4–10.7) — no dashboard can render without events, and no alert can fire without a persisted event stream. Within the UI tier, 10.4 (recruiter dashboard) should ship before 10.5 (admin consolidated) since admin views aggregate recruiter-level queries.
+
+**Required sequence:**
+
+1. **Story 10.0** (prep spike) — Inventory existing candidate-workflow code paths that will need funnel emission retrofit
+2. **Story 10.1** (schema + emission contract) — blocks everything
+3. **Story 10.2** (event store + query API) — blocks all dashboards
+4. **Story 10.3** (baseline config) — blocks baseline comparison in 10.4/10.5
+5. **Story 10.4** (recruiter dashboard) — user-visible first; validates end-to-end pipeline
+6. **Story 10.5** (admin consolidated dashboard) — reuses recruiter queries
+7. **Story 10.6** (attribution rollup) — value-add on top of 10.4/10.5
+8. **Story 10.7** (baseline-breach alerting) — final polish; requires stable trailing-30-day data
+
+### Story 10.0: Inventory Candidate-Workflow Code Paths for Funnel Retrofit (Prep Spike)
+
+As a platform engineer,
+I want an exhaustive inventory of every existing outreach, response, submission, and closure code path (Epics 2, 3, 4, 9),
+So that the funnel-event retrofit scope is known before Story 10.1 starts and no emission point is silently missed.
+
+**Funnel lever:** Foundational — de-risks retrofit scope for F-06 in the readiness tracker. No direct lift.
+
+**Size:** S (1–2 days, investigation only, no production code).
+
+**Acceptance Criteria:**
+
+**Given** existing code in `features/candidate-management/`, `features/ats/`, outreach/email/SMS modules, and candidate-portal handlers
+**When** the inventory is produced
+**Then** every state transition that should emit `outreach_sent`, `response_received`, `submitted_to_client`, `closed_won`, or `closed_lost` is listed with file path, line range, and proposed `source_epic` / `source_story` attribution
+**And** any ambiguous transitions (e.g., "is auto-reply a response_received?") are flagged with a proposed disposition for product review
+**And** the output is a markdown checklist committed to `_bmad-output/epic-10-retrofit-inventory.md`, to be consumed by Story 10.1 as the emission call-site list
+
+### Story 10.1: Define Funnel Event Schema and Emission Contract
+
+As a platform engineer,
+I want a canonical funnel event schema and emission contract adopted across outreach, response, submission, and closure paths,
+So that every recruiter action is measurable against the LinkedIn RPS baseline.
+
+**Funnel lever:** Foundational for Epic 10 — enables all downstream dashboards. No direct baseline comparison yet.
+
+**Acceptance Criteria:**
+
+**Given** candidate workflow modules across Epics 3, 4, 9
+**When** funnel-relevant events occur (outreach sent, response received, submitted to client, closed won, closed lost)
+**Then** a canonical event record is emitted with `event_type`, `recruiter_id`, `client_id`, `candidate_id`, `channel`, `tenant_id`, `timestamp`, `source_epic`, `source_story`, `attributes`
+**And** the schema is documented in the architecture doc and referenced by every emitting module
+**And** emission is idempotent per (event_type, recruiter_id, candidate_id, client_id) key
+
+### Story 10.2: Build Funnel Event Store and Query API
+
+As a platform engineer,
+I want a persistent funnel event store with a query API supporting recruiter, client, and time-range filters,
+So that dashboards and analytics can compute funnel rates without scanning operational tables.
+
+**Funnel lever:** Foundational — unlocks dashboard queries.
+
+**Acceptance Criteria:**
+
+**Given** emitted funnel events
+**When** they are persisted to the store
+**Then** records are durable, tenant-isolated, and queryable within 60 seconds of emission
+**And** the query API supports grouping by recruiter, stage, channel, and 30/90-day windows
+**And** the store retains events for ≥24 months to support year-over-year comparisons
+
+### Story 10.3: Store and Version LinkedIn RPS Baseline Configuration
+
+As an admin,
+I want the LinkedIn RPS baseline values stored in versioned configuration,
+So that the "beat baseline" comparison can evolve as LinkedIn's pricing or response rates change.
+
+**Funnel lever:** Foundational for comparison UI.
+
+**Acceptance Criteria:**
+
+**Given** the baseline values (100 InMails, 28% response, 50% submission, 3.6% closure, $200/mo)
+**When** configuration is loaded at runtime
+**Then** values are accessible via typed config API and versioned (effective_from / effective_to dates)
+**And** admin UI allows updating baseline values with audit trail
+**And** historical comparisons use the baseline that was effective at that time
+
+### Story 10.4: Build Recruiter Funnel Dashboard vs. LinkedIn RPS Baseline
+
+As a recruiter,
+I want a dashboard showing my own 4-stage funnel (outreach → response → submission → closure) compared to the LinkedIn RPS baseline,
+So that I can see whether CBLAeroApp is beating my previous LinkedIn RPS results.
+
+**Funnel lever:** All stages (visibility for the recruiter persona).
+
+**Acceptance Criteria:**
+
+**Given** an authenticated recruiter with funnel events
+**When** the recruiter opens their dashboard
+**Then** they see their trailing-30-day and trailing-90-day counts for each funnel stage alongside baseline targets
+**And** each stage shows the conversion rate vs. the prior stage (response rate, submission rate, closure rate)
+**And** a "beat baseline" indicator shows per-stage status (beating / matching / below) and the effective cost-per-closure
+**And** trend sparklines show week-over-week movement for each stage
+
+### Story 10.5: Build Admin Consolidated Funnel Dashboard with Leaderboard
+
+As an admin or delivery head,
+I want a consolidated funnel across all recruiters with per-recruiter rollup, leaderboard, and cost-per-recruiter view,
+So that I can coach underperformers and scale what works.
+
+**Funnel lever:** All stages (visibility for admin/delivery persona) + Cost.
+
+**Acceptance Criteria:**
+
+**Given** funnel events across all recruiters in the tenant
+**When** the admin opens the consolidated dashboard
+**Then** the 4-stage funnel aggregates across all recruiters with baseline comparison
+**And** a per-recruiter leaderboard ranks by closures/month and highlights those below baseline
+**And** cost-per-recruiter (all-in: platform + integrations + AI) is displayed next to the $200 LinkedIn baseline
+**And** the admin can drill into any recruiter's dashboard from the rollup
+
+### Story 10.6: Attribute Funnel Lift to Source Epic/Feature
+
+As a product owner,
+I want every funnel event tagged with the epic and story that emitted it,
+So that we can measure which features are actually moving the funnel.
+
+**Funnel lever:** Measurement of all other epics' claims.
+
+**Acceptance Criteria:**
+
+**Given** funnel events with `source_epic` and `source_story` attributes
+**When** the analytics view is filtered by source epic
+**Then** funnel-stage lift is attributable to epic-level changes
+**And** admin can answer: "Did Epic 5 (matching) move response rate?" with a before/after comparison
+**And** attribution is preserved through A/B rollouts and feature flags
+
+### Story 10.7: Baseline-Breach Alerting
+
+As an admin,
+I want alerts when any recruiter's trailing-30-day funnel falls below the LinkedIn RPS baseline,
+So that I can intervene before it affects monthly closures.
+
+**Funnel lever:** Closure rate + Cost (early intervention).
+
+**Acceptance Criteria:**
+
+**Given** recruiter trailing-30-day funnel metrics
+**When** any stage rate falls below the baseline for 7 consecutive days
+**Then** admin receives an alert via Teams with recruiter name, stage, and current vs. baseline rate
+**And** alert cadence is deduplicated to at most one per recruiter per stage per 7 days
+**And** alerts include a link to the recruiter's dashboard for drill-down

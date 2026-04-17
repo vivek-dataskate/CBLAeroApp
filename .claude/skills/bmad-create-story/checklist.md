@@ -195,6 +195,11 @@ You will systematically re-do the entire story creation process, but with a crit
 - Missing previous story context that could cause errors
 - Missing anti-pattern prevention that could lead to duplicate code
 - Missing security or performance requirements
+- **Missing or vague "Funnel Lever & Measurement" section** — this section is MANDATORY per the PRD north-star KPI (Beat LinkedIn RPS Recruiter Funnel). A story without a declared funnel lever, quantified expected lift, and a measurement path (funnel event + Epic 10 dashboard) is out of scope and cannot proceed to dev. Reject the story if:
+  - No funnel lever is declared, OR
+  - Lever is declared but lift is unquantified or non-measurable (e.g., "improves UX" is not measurable), OR
+  - Measurement path does not reference a funnel event (per Architecture → Funnel Telemetry) or an Epic 10 dashboard metric, OR
+  - For foundational stories, the enabled funnel work is not named (e.g., "enables Epic 10 dashboards" is valid; "foundational" alone is not).
 
 #### **5.2 Enhancement Opportunities (Should Add)**
 

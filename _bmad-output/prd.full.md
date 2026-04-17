@@ -71,13 +71,32 @@ The product’s core insight is that **availability is the primary signal**; can
 | **Launch Go/No-Go**        | 4-week pilot with 1–2 ideal-fit customers                          | Week 4 decision point locked in                      |
 | **Technical Readiness**    | 99.5% uptime; no cross-tenant data leakage                         | 8 pre-launch security/resilience gaps identified     |
 | **Compliance Baseline**    | Immutable audit, GDPR 30-day deletion, SOC 2 Q2 2027               | Phase 3 launch gate                                  |
-| **MVP Scope**              | 76 FR identifiers (including FR1a) across 3 tiers; 38 NFRs defined | Tier is defined per requirement tag (`[MVP Tier X]`) |
+| **MVP Scope**              | 82 FR identifiers (including FR1a and FR76-FR79a funnel telemetry) across 3 tiers; 38 NFRs defined | Tier is defined per requirement tag (`[MVP Tier X]`) |
 
 **Bottom Line:** ✅ Comprehensive, realistic, phased MVP. 🚩 Success requires: (1) committed pilot customer, (2) acceptance of 14-week timeline, (3) confidence-first approach (domain-logic → ML later), (4) strict cost governance.
 
 ---
 
 ## Success Criteria
+
+### North-Star KPI: Beat LinkedIn RPS Recruiter Funnel
+
+CBLAeroApp's overriding goal is to **beat the LinkedIn Recruiter Professional Services (RPS) funnel per recruiter per month** while simplifying recruiter workflow. Every feature, epic, and story must tie back to moving one of the four funnel stages below (or reducing recruiter effort).
+
+**LinkedIn RPS baseline (per recruiter, per month, @ $200/mo subscription):**
+
+| Stage | Baseline | CBLAeroApp Target (MVP) | Stretch (Post-MVP) |
+|---|---|---|---|
+| Outreach sent | 100 InMails | ≥150 candidate touches | ≥300 |
+| Response received | 28 (28% response rate) | ≥60 (≥40% response rate) | ≥120 |
+| Client submission | 14 (50% of responses) | ≥36 (≥60% of responses) | ≥72 |
+| Closure / deal | 0.5 (3.6% of responses) | ≥1.8 (≥5% of responses) | ≥4 |
+| Effective cost-per-recruiter | $200/mo | ≤$200/mo fully loaded | ≤$150/mo |
+| Recruiter time on non-recruitment work | unmeasured | <30 min/day | <15 min/day |
+
+**Measurement contract:** Every candidate workflow event (`outreach_sent`, `response_received`, `submitted_to_client`, `closed_won`, `closed_lost`) must be captured with `recruiter_id`, `client_id`, `candidate_id`, `timestamp`, `channel`, so per-recruiter and admin-consolidated funnels can be rendered and compared to baseline in real time. See Architecture (Funnel Telemetry requirement) and Epics (Funnel Telemetry & Analytics Dashboards epic).
+
+**Scope rule for future work:** Any epic or story proposal must declare which funnel stage it moves (or which recruiter-effort metric it reduces). Proposals without a declared funnel lever are out of scope for MVP.
 
 ### User Success
 
@@ -115,6 +134,17 @@ The product’s core insight is that **availability is the primary signal**; can
 - **Quality gate:** Each candidate includes human-readable match reason (e.g., "FAA cert + 5yr exp + location").
 
 ### Measurable Outcomes
+
+**Per-recruiter funnel (vs. LinkedIn RPS baseline — primary north-star):**
+
+- Outreach sent: ≥150/month (vs. 100 InMails baseline)
+- Response rate: ≥40% (vs. 28% baseline)
+- Submission rate (of responses): ≥60% (vs. 50% baseline)
+- Closure rate (of responses): ≥5% (vs. 3.6% baseline)
+- Closures per recruiter per month: ≥1.8 (vs. 0.5 baseline — ≥3.6× lift)
+- Effective cost per recruiter: ≤$200/month fully loaded (vs. $200 baseline)
+
+**Supporting outcomes:**
 
 - 5 candidates/req in 24 hrs (with confidence warning)
 - 80 % interview request rate (of contacted)
@@ -860,6 +890,16 @@ This approach balances speed (still ~14 weeks, not 20+) with proof of differenti
 - **FR74 [MVP Tier 2]:** Candidate can receive status notifications for interview scheduled, interview attended/missed, offer sent, offer decision, and start-date confirmation
 - **FR75 [MVP Tier 2]:** Candidate can download offer letter and other documents from portal
 
+### Funnel Telemetry & LinkedIn RPS Benchmark (Epic 10 — North-Star KPI)
+
+> **Source:** Success Criteria → North-Star KPI: Beat LinkedIn RPS Recruiter Funnel. These FRs operationalize the measurement system every other funnel-moving FR depends on.
+
+- **FR76 [MVP Tier 2]:** System must emit canonical funnel events (`outreach_sent`, `response_received`, `submitted_to_client`, `closed_won`, `closed_lost`) at every candidate-workflow state transition, with `tenant_id`, `recruiter_id`, `client_id`, `candidate_id`, `channel`, `source_epic`, `source_story`, `occurred_at`, `recorded_at`, and an idempotency key. Emission is synchronous with the underlying state change (not background-only). ⚠️
+- **FR77 [MVP Tier 2]:** Recruiter can view a dashboard of their own 4-stage funnel (outreach → response → submission → closure) compared to the LinkedIn RPS baseline (100 / 28 / 14 / 0.5 @ $200/mo), with trailing-30-day and trailing-90-day counts, conversion rates, cost-per-closure, and 90-day trend sparklines.
+- **FR78 [MVP Tier 2]:** Admin and delivery-head roles can view a consolidated funnel dashboard across all recruiters with a leaderboard, per-recruiter baseline-beat status, cost-per-recruiter rollup vs. $200/mo baseline, and drill-down into any individual recruiter's dashboard.
+- **FR79 [MVP Tier 2]:** System must raise a baseline-breach alert when any recruiter's trailing-30-day rate (response, submission, or closure) falls below the LinkedIn RPS baseline for 7 consecutive days, delivered via Teams to the recruiter's delivery head with dedup at one alert per recruiter per stage per 7 days. ⚠️
+- **FR79a [MVP Tier 2]:** Admin can update LinkedIn RPS baseline configuration through a versioned admin UI; historical dashboard views use the baseline effective at the time of the events being displayed.
+
 ---
 
 ### Functional Requirements Summary by Phase
@@ -876,8 +916,8 @@ Core mission FRs (sourcing, outreach, workflow, scoring, compliance, audit, ops)
 - Compliance: FR56-61 (domain questions, FAA, badging, audit trail)
 - Operations: FR65-70 (graceful degrade, audit trail, backup, residency)
 
-**Tier 2 MVP (Weeks 5-10): +28 FRs**
-Automation evidence + advanced features:
+**Tier 2 MVP (Weeks 5-10): +33 FRs**
+Automation evidence + advanced features + north-star measurement:
 
 - Candidate Management: FR2 (scraper)
 - Outreach: FR15, 17 (retry, bulk)
@@ -887,6 +927,7 @@ Automation evidence + advanced features:
 - Metrics: FR49-52, 55 (cost dashboard, KPI alerts, forecasting)
 - Operations: FR63-67 (API monitoring, anomaly detection)
 - Portal: FR71-75 (candidate portal)
+- Funnel Telemetry: FR76-79, 79a (north-star KPI event emission + recruiter/admin dashboards + baseline-breach alerts + baseline config) — must ship before Week 10 Automation ROI gate so ROI is measurable against LinkedIn RPS baseline
 
 **Tier 3 MVP (Weeks 11-14): +2 FRs**
 Pilot ops + scaling:
@@ -894,7 +935,7 @@ Pilot ops + scaling:
 - Workflow: FR23 (offer management)
 - Compliance: FR62 (GDPR deletion workflow)
 
-**Total MVP Phase 1 (14 weeks):** 45 + 28 + 2 = **75 numbered FRs**, plus **FR1a** = **76 FR identifiers**
+**Total MVP Phase 1 (14 weeks):** 45 + 33 + 2 = **80 numbered FRs**, plus **FR1a** and **FR79a** = **82 FR identifiers**
 
 ---
 
