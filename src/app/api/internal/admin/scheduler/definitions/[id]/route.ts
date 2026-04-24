@@ -18,6 +18,7 @@ const JOB_POLICY_MAP: Record<string, { policyFamily: string; policyKey: string }
 
 type PatchBody = {
   cron_expression?: string;
+  interval_minutes?: number | null;
   enabled?: boolean;
   next_run_at?: string;
 };
@@ -48,12 +49,17 @@ export const PATCH = withAuth(async ({ session, request, params }) => {
     );
   }
 
-  const { cron_expression, enabled, next_run_at } = body;
+  const { cron_expression, interval_minutes, enabled, next_run_at } = body;
 
   // At least one field required
-  if (cron_expression === undefined && enabled === undefined && next_run_at === undefined) {
+  if (
+    cron_expression === undefined &&
+    interval_minutes === undefined &&
+    enabled === undefined &&
+    next_run_at === undefined
+  ) {
     return NextResponse.json(
-      { error: { code: 'MISSING_FIELDS', message: 'At least one of cron_expression, enabled, next_run_at is required.' } },
+      { error: { code: 'MISSING_FIELDS', message: 'At least one of cron_expression, interval_minutes, enabled, next_run_at is required.' } },
       { status: 400 },
     );
   }
@@ -66,13 +72,28 @@ export const PATCH = withAuth(async ({ session, request, params }) => {
     );
   }
 
+  // cron_expression and interval_minutes are mutually exclusive cadence inputs
+  if (cron_expression !== undefined && interval_minutes !== undefined && interval_minutes !== null) {
+    return NextResponse.json(
+      { error: { code: 'CONFLICTING_FIELDS', message: 'Provide only one of cron_expression or interval_minutes, not both.' } },
+      { status: 400 },
+    );
+  }
+
+  if (interval_minutes !== undefined && next_run_at !== undefined) {
+    return NextResponse.json(
+      { error: { code: 'CONFLICTING_FIELDS', message: 'Provide only one of interval_minutes or next_run_at, not both.' } },
+      { status: 400 },
+    );
+  }
+
   const db = getSupabaseAdminClient();
   const tenantId = session.tenantId;
 
   // Verify ownership — reject 403 if definition belongs to a different tenant
   const { data: definition, error: fetchError } = await db
     .from('schedule_definitions')
-    .select('id, tenant_id, job_key, cron_expression, enabled')
+    .select('id, tenant_id, job_key, cron_expression, interval_minutes, enabled')
     .eq('id', id)
     .maybeSingle();
 
@@ -121,6 +142,8 @@ export const PATCH = withAuth(async ({ session, request, params }) => {
 
     updates.cron_expression = cron_expression.trim();
     updates.next_run_at = nextRunAt;
+    // Switching to a cron cadence clears any rolling-interval override
+    updates.interval_minutes = null;
 
     // Create a new policy version for this cron change (AC 2)
     // P4: wrap in try/catch so a policy-version failure doesn't silently skip the cron update
@@ -144,6 +167,28 @@ export const PATCH = withAuth(async ({ session, request, params }) => {
           { status: 500 },
         );
       }
+    }
+  }
+
+  // Validate and apply interval_minutes change (rolling-interval cadence)
+  if (interval_minutes !== undefined) {
+    if (interval_minutes === null) {
+      updates.interval_minutes = null;
+    } else {
+      if (typeof interval_minutes !== 'number' || !Number.isInteger(interval_minutes) || interval_minutes <= 0) {
+        return NextResponse.json(
+          { error: { code: 'INVALID_INTERVAL', message: 'interval_minutes must be a positive integer or null.' } },
+          { status: 400 },
+        );
+      }
+      if (interval_minutes > 10080) {
+        return NextResponse.json(
+          { error: { code: 'INVALID_INTERVAL', message: 'interval_minutes cannot exceed 10080 (7 days).' } },
+          { status: 400 },
+        );
+      }
+      updates.interval_minutes = interval_minutes;
+      updates.next_run_at = new Date(Date.now() + interval_minutes * 60_000).toISOString();
     }
   }
 
