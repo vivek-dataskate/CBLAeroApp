@@ -7,6 +7,7 @@ export type ScheduleDefinitionSummary = {
   job_key: string;
   name: string;
   cron_expression: string;
+  interval_minutes: number | null;
   enabled: boolean;
   next_run_at: string;
   last_claimed_at: string | null;
@@ -30,7 +31,7 @@ export const GET = withAuth(async ({ session }) => {
     // Fetch all schedule definitions for this tenant
     const { data: definitions, error: defsError } = await db
       .from('schedule_definitions')
-      .select('id, job_key, name, cron_expression, enabled, next_run_at, last_claimed_at')
+      .select('id, job_key, name, cron_expression, interval_minutes, enabled, next_run_at, last_claimed_at')
       .eq('tenant_id', tenantId)
       .order('job_key', { ascending: true });
 
@@ -76,6 +77,7 @@ export const GET = withAuth(async ({ session }) => {
         job_key: def.job_key,
         name: def.name,
         cron_expression: def.cron_expression,
+        interval_minutes: def.interval_minutes ?? null,
         enabled: def.enabled,
         next_run_at: def.next_run_at,
         last_claimed_at: def.last_claimed_at,

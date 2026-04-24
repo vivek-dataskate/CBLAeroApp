@@ -14,6 +14,7 @@ type ScheduleDefinition = {
   job_key: string;
   name: string;
   cron_expression: string;
+  interval_minutes: number | null;
   enabled: boolean;
   next_run_at: string;
   last_claimed_at: string | null;
@@ -41,6 +42,25 @@ function relativeTimeFuture(iso: string | null): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `in ${hrs}h`;
   return `in ${Math.floor(hrs / 24)}d`;
+}
+
+function intervalMinutesToHuman(minutes: number): string {
+  if (minutes < 60 || minutes % 60 !== 0) {
+    return minutes === 1 ? 'Every minute' : `Every ${minutes} minutes`;
+  }
+  const hours = minutes / 60;
+  if (hours < 24 || hours % 24 !== 0) {
+    return hours === 1 ? 'Every hour' : `Every ${hours} hours`;
+  }
+  const days = hours / 24;
+  return days === 1 ? 'Every day' : `Every ${days} days`;
+}
+
+function scheduleToHuman(def: { cron_expression: string; interval_minutes: number | null }): string {
+  if (def.interval_minutes && def.interval_minutes > 0) {
+    return intervalMinutesToHuman(def.interval_minutes);
+  }
+  return cronToHuman(def.cron_expression);
 }
 
 function cronToHuman(cron: string): string {
@@ -124,12 +144,6 @@ function parseCronToInterval(cron: string): { amount: number; unit: 'minutes' | 
     return { amount: 1, unit: 'hours' };
   }
   return null;
-}
-
-function intervalToCron(amount: number, unit: 'minutes' | 'hours'): string {
-  if (unit === 'minutes') return `*/${amount} * * * *`;
-  if (amount === 1) return '0 * * * *';
-  return `0 */${amount} * * *`;
 }
 
 export default function SchedulerStatusCard({ compact = false }: { compact?: boolean }) {
@@ -270,8 +284,8 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
       setRowError((prev) => ({ ...prev, [def.id]: 'Maximum interval is 168 hours (1 week).' }));
       return;
     }
-    const newCron = intervalToCron(amount, unit);
-    if (newCron === def.cron_expression) {
+    const newIntervalMinutes = unit === 'hours' ? amount * 60 : amount;
+    if (newIntervalMinutes === def.interval_minutes) {
       setEditingCron(null);
       return;
     }
@@ -281,12 +295,12 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
       const r = await fetch(`/api/internal/admin/scheduler/definitions/${def.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cron_expression: newCron }),
+        body: JSON.stringify({ interval_minutes: newIntervalMinutes }),
       });
       const json = await r.json();
       if (!r.ok) throw new Error(json?.error?.message ?? `HTTP ${r.status}`);
       setEditingCron(null);
-      setToast({ message: `Schedule updated: ${cronToHuman(newCron)}`, type: 'success' });
+      setToast({ message: `Schedule updated: ${intervalMinutesToHuman(newIntervalMinutes)}`, type: 'success' });
       load();
     } catch (err) {
       setRowError((prev) => ({ ...prev, [def.id]: err instanceof Error ? err.message : String(err) }));
@@ -372,13 +386,22 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
                     ) : (
                       <button
                         onClick={() => {
+                          if (def.interval_minutes && def.interval_minutes > 0) {
+                            const useHours = def.interval_minutes >= 60 && def.interval_minutes % 60 === 0;
+                            setEditingCron({
+                              id: def.id,
+                              amount: useHours ? def.interval_minutes / 60 : def.interval_minutes,
+                              unit: useHours ? 'hours' : 'minutes',
+                            });
+                            return;
+                          }
                           const parsed = parseCronToInterval(def.cron_expression);
                           setEditingCron(parsed ? { id: def.id, ...parsed } : { id: def.id, amount: 60, unit: 'minutes' });
                         }}
                         className="text-xs text-gray-400 hover:text-cbl-blue"
                         title="Click to edit schedule"
                       >
-                        {cronToHuman(def.cron_expression)} · {relativeTimeFuture(def.next_run_at)}
+                        {scheduleToHuman(def)} · {relativeTimeFuture(def.next_run_at)}
                       </button>
                     )}
                   </div>
@@ -443,8 +466,8 @@ export default function SchedulerStatusCard({ compact = false }: { compact?: boo
                         <span className="font-mono text-xs text-gray-400">{def.job_key}</span>
                       </td>
                       <td className="px-3 py-3">
-                        <span className="text-xs text-gray-700" title={def.cron_expression}>
-                          {cronToHuman(def.cron_expression)}
+                        <span className="text-xs text-gray-700" title={def.interval_minutes ? `interval_minutes=${def.interval_minutes}` : def.cron_expression}>
+                          {scheduleToHuman(def)}
                         </span>
                       </td>
                       <td className="px-3 py-3">

@@ -91,6 +91,23 @@ function safeCalculateNextRunAt(cronExpression: string, after: Date, jobKey: str
   }
 }
 
+/**
+ * Computes next_run_at honoring rolling-interval mode.
+ * When intervalMinutes is set (positive integer), next_run_at = after + intervalMinutes minutes.
+ * Otherwise falls back to cron-derived scheduling.
+ */
+function computeNextRunAt(
+  cronExpression: string,
+  intervalMinutes: number | null | undefined,
+  after: Date,
+  jobKey: string,
+): string {
+  if (typeof intervalMinutes === 'number' && intervalMinutes > 0) {
+    return new Date(after.getTime() + intervalMinutes * 60_000).toISOString();
+  }
+  return safeCalculateNextRunAt(cronExpression, after, jobKey);
+}
+
 function normalizeTenantId(tenantId?: string): string {
   return tenantId?.trim() || DEFAULT_TENANT_ID;
 }
@@ -202,7 +219,7 @@ export class GlobalScheduler {
         console.error(`[GlobalScheduler] ${claimedDefinition.job_key}: failed to create schedule_run — skipping`);
         await this.updateScheduleDefinitionNextRun(
           claimedDefinition.id,
-          safeCalculateNextRunAt(claimedDefinition.cron_expression, claimedAt, claimedDefinition.job_key),
+          computeNextRunAt(claimedDefinition.cron_expression, claimedDefinition.interval_minutes, claimedAt, claimedDefinition.job_key),
         );
         outcome.status = 'failed';
         outcome.message = 'Failed to create audit run record';
@@ -215,7 +232,11 @@ export class GlobalScheduler {
         claimedDefinition.job_key,
         claimedDefinition.tenant_id,
         runId,
-        { cron_expression: claimedDefinition.cron_expression, schedule_definition_id: claimedDefinition.id },
+        {
+          cron_expression: claimedDefinition.cron_expression,
+          interval_minutes: claimedDefinition.interval_minutes ?? null,
+          schedule_definition_id: claimedDefinition.id,
+        },
       );
 
       if (!outboxId) {
@@ -223,7 +244,7 @@ export class GlobalScheduler {
         await this.updateScheduleRunStatus(runId, 'failed', 'Failed to create outbox event', null, new Date().toISOString());
         await this.updateScheduleDefinitionNextRun(
           claimedDefinition.id,
-          safeCalculateNextRunAt(claimedDefinition.cron_expression, claimedAt, claimedDefinition.job_key),
+          computeNextRunAt(claimedDefinition.cron_expression, claimedDefinition.interval_minutes, claimedAt, claimedDefinition.job_key),
         );
         outcome.status = 'failed';
         outcome.message = 'Failed to create outbox event';
@@ -232,7 +253,7 @@ export class GlobalScheduler {
 
       // Unregistered job: fail fast and advance next_run_at to prevent starvation (P5)
       if (!jobRegistration) {
-        const nextRunAt = safeCalculateNextRunAt(claimedDefinition.cron_expression, claimedAt, claimedDefinition.job_key);
+        const nextRunAt = computeNextRunAt(claimedDefinition.cron_expression, claimedDefinition.interval_minutes, claimedAt, claimedDefinition.job_key);
         await this.updateScheduleRunStatus(runId, 'failed', 'No registered job for schedule', null, new Date().toISOString());
         await this.updateOutboxEventStatus(outboxId, 'failed', 'No registered job for schedule');
         await this.updateScheduleDefinitionNextRun(claimedDefinition.id, nextRunAt);
@@ -307,8 +328,13 @@ export class GlobalScheduler {
   }
 
   private async executeOutboxEvent(event: { id: string; job_key: string; schedule_run_id: string | null; payload: unknown }): Promise<ScheduleOutcome> {
-    const payload = (event.payload ?? {}) as { cron_expression?: string; schedule_definition_id?: number };
+    const payload = (event.payload ?? {}) as {
+      cron_expression?: string;
+      interval_minutes?: number | null;
+      schedule_definition_id?: number;
+    };
     const cronExpression = payload.cron_expression;
+    const intervalMinutes = payload.interval_minutes ?? null;
     const scheduleDefinitionId = payload.schedule_definition_id;
 
     const outcome: ScheduleOutcome = {
@@ -331,7 +357,7 @@ export class GlobalScheduler {
       if (scheduleDefinitionId && cronExpression) {
         await this.updateScheduleDefinitionNextRun(
           scheduleDefinitionId,
-          safeCalculateNextRunAt(cronExpression, new Date(), event.job_key),
+          computeNextRunAt(cronExpression, intervalMinutes, new Date(), event.job_key),
         );
       }
       outcome.status = 'failed';
@@ -350,7 +376,9 @@ export class GlobalScheduler {
       await jobRegistration.job.run();
       const durationMs = Date.now() - startMs;
       const effectiveCron = cronExpression ?? jobRegistration.metadata.cronExpression;
-      const nextRunAt = safeCalculateNextRunAt(effectiveCron, executionStartedAt, event.job_key);
+      const completedAt = new Date();
+      // D3: rolling-interval jobs anchor to completion time so next_run_at reflects actual end, not start
+      const nextRunAt = computeNextRunAt(effectiveCron, intervalMinutes, intervalMinutes ? completedAt : executionStartedAt, event.job_key);
 
       await this.updateOutboxEventStatus(event.id, 'completed');
       if (event.schedule_run_id) {
@@ -370,7 +398,8 @@ export class GlobalScheduler {
       const durationMs = Date.now() - startMs;
       const errorMessage = sanitizeErrorMessage(err);
       const effectiveCron = cronExpression ?? jobRegistration.metadata.cronExpression;
-      const nextRunAt = safeCalculateNextRunAt(effectiveCron, executionStartedAt, event.job_key);
+      const failedAt = new Date();
+      const nextRunAt = computeNextRunAt(effectiveCron, intervalMinutes, intervalMinutes ? failedAt : executionStartedAt, event.job_key);
 
       await this.updateOutboxEventStatus(event.id, 'failed', errorMessage);
       if (event.schedule_run_id) {
