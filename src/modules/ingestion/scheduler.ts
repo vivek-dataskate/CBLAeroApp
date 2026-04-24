@@ -420,24 +420,9 @@ export class GlobalScheduler {
         if (policyVersionId && existing.policy_version_id !== policyVersionId) {
           updates.policy_version_id = policyVersionId;
         }
-        // P3: Sync cron_expression and name when code changes — prevents stale schedule in DB
-        if (existing.cron_expression !== metadata.cronExpression) {
-          // NP2: use safe wrapper to prevent throws crashing the definition update loop
-          updates.cron_expression = metadata.cronExpression;
-          updates.next_run_at = safeCalculateNextRunAt(metadata.cronExpression, new Date(), metadata.jobKey);
-
-          // DN6: Create a new policy version when cron expression changes — AC 2 compliance
-          if (metadata.policyFamily && metadata.policyKey) {
-            const newVersionId = await this.createPolicyVersionForCronChange(
-              metadata.policyFamily,
-              metadata.policyKey,
-              metadata.cronExpression,
-            );
-            if (newVersionId) {
-              updates.policy_version_id = newVersionId;
-            }
-          }
-        }
+        // Code-level metadata.cronExpression is the seed default used only on first insert.
+        // Once a row exists, admin edits via PATCH /scheduler/definitions/[id] are the source of truth —
+        // do NOT sync cron_expression from code here, or user edits will be clobbered on every scheduler tick.
         if (existing.name !== metadata.scheduleName) {
           updates.name = metadata.scheduleName;
         }
@@ -470,15 +455,6 @@ export class GlobalScheduler {
         console.error(`[GlobalScheduler] Failed to insert definition for ${metadata.jobKey}:`, insertError.message);
       }
     }
-  }
-
-  // DN6: delegates to the exported standalone function so the admin PATCH route can call it without GlobalScheduler
-  private async createPolicyVersionForCronChange(
-    policyFamily: string,
-    policyKey: string,
-    newCronExpression: string,
-  ): Promise<number | null> {
-    return createPolicyVersionForCronChange(policyFamily, policyKey, newCronExpression);
   }
 
   private async resolveCurrentPolicyVersionId(policyFamily: string, policyKey: string): Promise<number | null> {
