@@ -35,9 +35,13 @@ const TEST_ROOT_PATH = `${TEST_ROOT_PARENT}/${TEST_ROOT_NAME}`;
 process.env.CBL_ONEDRIVE_RESUME_PATH = TEST_ROOT_PATH;
 
 const TEST_FILES = [
-  { recruiter: 'Test Recruiter A', subPath: '', name: 'flat.docx' },
-  { recruiter: 'Test Recruiter A', subPath: 'Sub1/Sub2', name: 'deep.docx' },
-  { recruiter: 'Test Recruiter B', subPath: '', name: 'single.docx' },
+  { recruiter: 'Test Recruiter A', subPath: '', name: 'flat.docx', kind: 'docx' as const },
+  { recruiter: 'Test Recruiter A', subPath: 'Sub1/Sub2', name: 'deep.docx', kind: 'docx' as const },
+  { recruiter: 'Test Recruiter B', subPath: '', name: 'single.docx', kind: 'docx' as const },
+  { recruiter: 'Test Recruiter B', subPath: '', name: 'cover.txt', kind: 'txt' as const },
+  { recruiter: 'Test Recruiter B', subPath: '', name: 'legacy.rtf', kind: 'rtf' as const },
+  { recruiter: 'Test Recruiter B', subPath: '', name: 'page.html', kind: 'html' as const },
+  { recruiter: 'Test Recruiter B', subPath: '', name: 'readme.md', kind: 'md' as const },
 ];
 
 const PY_SCRIPT = [
@@ -58,6 +62,35 @@ function generateDocx(localPath: string, content: string) {
     execSync(`python3 ${JSON.stringify(scriptPath)} ${JSON.stringify(localPath)} ${JSON.stringify(content)}`);
   } finally {
     fs.unlinkSync(scriptPath);
+  }
+}
+
+function generateTxt(localPath: string, content: string) {
+  fs.writeFileSync(localPath, content + '\n');
+}
+
+function generateRtf(localPath: string, content: string) {
+  // Minimal valid RTF — Graph renders this to PDF
+  fs.writeFileSync(localPath, `{\\rtf1\\ansi\\deff0 ${content.replace(/[{}\\]/g, (c) => '\\' + c)}}`);
+}
+
+function generateHtml(localPath: string, content: string) {
+  fs.writeFileSync(localPath, `<!doctype html><html><head><title>Test</title></head><body><h1>Resume</h1><p>${content}</p></body></html>`);
+}
+
+function generateMd(localPath: string, content: string) {
+  fs.writeFileSync(localPath, `# Resume\n\n${content}\n`);
+}
+
+type FileKind = 'docx' | 'txt' | 'rtf' | 'html' | 'md';
+
+function contentTypeFor(kind: FileKind): string {
+  switch (kind) {
+    case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'txt':  return 'text/plain';
+    case 'rtf':  return 'application/rtf';
+    case 'html': return 'text/html';
+    case 'md':   return 'text/markdown';
   }
 }
 
@@ -87,9 +120,15 @@ async function main() {
   try {
     // ── Generate local .docx files ──────────────────────────────
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-test-'));
-    console.log(`[setup] Generating .docx in ${tmpDir}`);
+    console.log(`[setup] Generating fixture files in ${tmpDir}`);
     for (const f of TEST_FILES) {
-      generateDocx(path.join(tmpDir, f.name), `Sample resume for ${f.recruiter} (${f.name}) — test, safe to delete`);
+      const local = path.join(tmpDir, f.name);
+      const content = `Sample resume for ${f.recruiter} (${f.name}) — test, safe to delete`;
+      if (f.kind === 'docx') generateDocx(local, content);
+      else if (f.kind === 'txt') generateTxt(local, content);
+      else if (f.kind === 'rtf') generateRtf(local, content);
+      else if (f.kind === 'html') generateHtml(local, content);
+      else if (f.kind === 'md') generateMd(local, content);
     }
 
     // ── Create test root in OneDrive ────────────────────────────
@@ -132,7 +171,7 @@ async function main() {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'Content-Type': contentTypeFor(f.kind),
         },
         body: buffer as unknown as BodyInit,
       });
@@ -151,7 +190,7 @@ async function main() {
     console.log('\n[verify] Inspecting OneDrive state...');
 
     function flatPdfName(subPath: string, filename: string): string {
-      const ext = filename.match(/\.docx?$/i)?.[0] ?? '';
+      const ext = filename.match(/\.(?:docx?|rtf|txt|html?|odt|md)$/i)?.[0] ?? '';
       const baseNoExt = ext ? filename.slice(0, filename.length - ext.length) : filename;
       const segments = subPath ? subPath.split('/') : [];
       const parts = [...segments, baseNoExt].map((s) => s.replace(/\s+/g, ''));

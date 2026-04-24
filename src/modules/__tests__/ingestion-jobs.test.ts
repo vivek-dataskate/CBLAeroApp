@@ -94,7 +94,7 @@ vi.mock('@/modules/providers/graph', () => ({
   getSharedGraphClient: providerMocks.getSharedGraphClient,
 }));
 
-import { CeipalIngestionJob, EmailIngestionJob, OneDriveWordToPdfJob, computeFlatPdfName, registerIngestionJobs } from '@/modules/ingestion/jobs';
+import { CeipalIngestionJob, EmailIngestionJob, OneDriveWordToPdfJob, computeFlatPdfName, wrapTextAsRtf, registerIngestionJobs } from '@/modules/ingestion/jobs';
 
 describe('CeipalIngestionJob', () => {
   beforeEach(() => {
@@ -293,8 +293,34 @@ describe('computeFlatPdfName', () => {
   it('falls back to plain basename for files at recruiter root', () => {
     expect(computeFlatPdfName([], 'cool resume.docx')).toBe('coolresume.pdf');
   });
-  it('handles .doc extension', () => {
-    expect(computeFlatPdfName(['Sub'], 'old.doc')).toBe('Sub-old.pdf');
+  it.each([
+    ['.doc',  'old.doc',          'old.pdf'],
+    ['.docx', 'new.docx',         'new.pdf'],
+    ['.rtf',  'legacy.rtf',       'legacy.pdf'],
+    ['.txt',  'cover note.txt',   'covernote.pdf'],
+    ['.html', 'web copy.html',    'webcopy.pdf'],
+    ['.htm',  'old.htm',          'old.pdf'],
+    ['.odt',  'open office.odt',  'openoffice.pdf'],
+    ['.md',   'readme.md',        'readme.pdf'],
+  ])('strips %s extension', (_label, input, expected) => {
+    expect(computeFlatPdfName([], input)).toBe(expected);
+  });
+});
+
+describe('wrapTextAsRtf', () => {
+  it('produces a valid minimal RTF wrapper', () => {
+    const result = wrapTextAsRtf('Hello world');
+    expect(result).toBe('{\\rtf1\\ansi\\deff0 Hello world}');
+  });
+  it('escapes RTF metacharacters', () => {
+    expect(wrapTextAsRtf('a {b} \\c')).toBe('{\\rtf1\\ansi\\deff0 a \\{b\\} \\\\c}');
+  });
+  it('converts newlines to \\par', () => {
+    expect(wrapTextAsRtf('line1\nline2')).toBe('{\\rtf1\\ansi\\deff0 line1\\par line2}');
+  });
+  it('encodes non-ASCII as \\u<n>?', () => {
+    // 'é' is U+00E9 = 233 (positive in 16-bit signed)
+    expect(wrapTextAsRtf('café')).toBe('{\\rtf1\\ansi\\deff0 caf\\u233?}');
   });
 });
 
@@ -361,21 +387,28 @@ describe('OneDriveWordToPdfJob', () => {
       return { ok: true, status: 200, data: { id: itemId } };
     });
 
+    const del = vi.fn(async () => ({ ok: true, status: 204, data: null }));
+
     const getAccessToken = vi.fn().mockResolvedValue('fake-token');
 
-    return { stub: { get, post, patch, getAccessToken }, created, moved };
+    return { stub: { get, post, patch, delete: del, getAccessToken }, created, moved };
   }
 
   /** Mock global fetch for binary GET (PDF rendition) + PUT (upload). */
   function mockBinaryFetch() {
     const calls: Array<{ url: string; method: string }> = [];
+    let uploadCounter = 0;
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      calls.push({ url, method: init?.method ?? 'GET' });
+      const method = init?.method ?? 'GET';
+      calls.push({ url, method });
+      const isUpload = method === 'PUT';
       return {
         ok: true,
-        status: 200,
+        status: isUpload ? 201 : 200,
         arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer, // %PDF
         text: async () => '',
+        // uploadFileReturnId expects { id } back from the PUT response
+        json: async () => ({ id: `mock-upload-${++uploadCounter}` }),
       } as unknown as Response;
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -608,6 +641,7 @@ describe('OneDriveWordToPdfJob', () => {
       },
     });
     providerMocks.getSharedGraphClient.mockReturnValue(stub);
+    let uploadCounter = 0;
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? 'GET';
       if (url.includes('format=pdf') && url.includes('/drive/items/doc-fail/')) {
@@ -618,6 +652,7 @@ describe('OneDriveWordToPdfJob', () => {
         status: method === 'PUT' ? 201 : 200,
         arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
         text: async () => '',
+        json: async () => ({ id: `mock-${++uploadCounter}` }),
       } as unknown as Response;
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -632,6 +667,112 @@ describe('OneDriveWordToPdfJob', () => {
       expect.any(Error),
       expect.anything(),
     );
+  });
+
+  it('picks up all convertible types (docx, doc, rtf, txt, html, htm, odt, md) and ignores the rest', async () => {
+    const { stub, moved } = makeGraphStub({
+      rootId: 'root-id',
+      children: {
+        'root-id': [{ id: 'rec', name: 'Rec', isFolder: true }],
+        'rec': [
+          // Convertible — should all be processed
+          { id: 'f-docx',  name: 'a.docx' },
+          { id: 'f-doc',   name: 'b.doc' },
+          { id: 'f-rtf',   name: 'c.rtf' },
+          { id: 'f-txt',   name: 'd.txt' },
+          { id: 'f-html',  name: 'e.html' },
+          { id: 'f-htm',   name: 'f.htm' },
+          { id: 'f-odt',   name: 'g.odt' },
+          { id: 'f-md',    name: 'h.md' },
+          // Should be ignored — not text-bearing or shortcuts/lock files
+          { id: 'i-jpg',   name: 'photo.jpg' },
+          { id: 'i-jpeg',  name: 'photo.jpeg' },
+          { id: 'i-png',   name: 'photo.png' },
+          { id: 'i-lnk',   name: 'shortcut.lnk' },
+          { id: 'i-tmp',   name: '~WRL0001.tmp' },
+          { id: 'i-pdf',   name: 'already.pdf' },     // PDFs are downstream's job
+          { id: 'i-noext', name: 'mystery' },
+        ],
+      },
+    });
+    providerMocks.getSharedGraphClient.mockReturnValue(stub);
+    mockBinaryFetch();
+
+    await new OneDriveWordToPdfJob().run();
+
+    const movedIds = new Set(moved.map((m) => m.itemId));
+    // All 8 convertible types moved to converted/
+    expect(movedIds).toEqual(new Set(['f-docx', 'f-doc', 'f-rtf', 'f-txt', 'f-html', 'f-htm', 'f-odt', 'f-md']));
+    // Nothing else touched
+    for (const ignored of ['i-jpg', 'i-jpeg', 'i-png', 'i-lnk', 'i-tmp', 'i-pdf', 'i-noext']) {
+      expect(movedIds.has(ignored)).toBe(false);
+    }
+  });
+
+  it('uses RTF-wrap workaround for .txt files (Graph rejects .txt directly)', async () => {
+    const { stub, created, moved } = makeGraphStub({
+      rootId: 'root-id',
+      children: {
+        'root-id': [{ id: 'rec', name: 'Rec', isFolder: true }],
+        'rec':     [{ id: 'txt-1', name: 'cover.txt' }],
+      },
+    });
+    providerMocks.getSharedGraphClient.mockReturnValue(stub);
+
+    // Track every fetch call so we can verify the RTF-wrap sequence:
+    //   1. GET /content (download .txt)
+    //   2. PUT /pdfs/.tmp-<uuid>.rtf (upload temp wrapper)
+    //   3. GET /content?format=pdf for the temp item (rendition)
+    //   4. PUT /pdfs/cover.pdf (final PDF upload)
+    // ...and the temp file is deleted via graph.delete (PATCH/DELETE on stub).
+    let tempUploadId: string | null = null;
+    const fetchCalls: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      fetchCalls.push({ url, method });
+      if (method === 'PUT' && url.includes('.tmp-') && url.endsWith('.rtf:/content')) {
+        tempUploadId = `temp-${crypto.randomUUID()}`;
+        return {
+          ok: true, status: 201,
+          arrayBuffer: async () => new ArrayBuffer(0),
+          text: async () => '',
+          json: async () => ({ id: tempUploadId }),
+        } as unknown as Response;
+      }
+      if (method === 'PUT') {
+        return {
+          ok: true, status: 201,
+          arrayBuffer: async () => new ArrayBuffer(0),
+          text: async () => '',
+          json: async () => ({ id: 'final-pdf-id' }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true, status: 200,
+        arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+        text: async () => 'sample text content',
+        json: async () => ({}),
+      } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OneDriveWordToPdfJob().run();
+
+    // pdfs/ folder created (needed before temp upload)
+    expect(created.find((c) => c.name === 'pdfs')).toBeDefined();
+    // .txt content was downloaded (no ?format=pdf, just /content)
+    expect(fetchCalls.some((c) => c.method === 'GET' && c.url.endsWith('/drive/items/txt-1/content'))).toBe(true);
+    // Temp .rtf wrapper was uploaded with .tmp- prefix into pdfs/
+    const tempPut = fetchCalls.find((c) => c.method === 'PUT' && c.url.includes('.tmp-') && c.url.endsWith('.rtf:/content'));
+    expect(tempPut).toBeDefined();
+    // PDF rendition was fetched against the TEMP file id (not the original .txt id)
+    expect(fetchCalls.some((c) => c.url.includes('format=pdf') && tempUploadId !== null && c.url.includes(`/drive/items/${tempUploadId}/`))).toBe(true);
+    // Final PDF uploaded to pdfs/cover.pdf
+    expect(fetchCalls.some((c) => c.method === 'PUT' && c.url.endsWith('cover.pdf:/content'))).toBe(true);
+    // Temp file was deleted
+    expect(stub.delete).toHaveBeenCalledWith(expect.stringContaining(`/drive/items/${tempUploadId}`));
+    // Original .txt was moved to converted/
+    expect(moved.some((m) => m.itemId === 'txt-1')).toBe(true);
   });
 
   it('skips oversized files without attempting conversion', async () => {
