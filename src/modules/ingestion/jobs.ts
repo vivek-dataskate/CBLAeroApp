@@ -655,6 +655,488 @@ export class OneDriveResumePollerJob implements SchedulerJob {
   }
 }
 
+/**
+ * OneDrive Word → PDF converter. Recruiters upload `.doc`/`.docx` resumes
+ * alongside PDFs into the same OneDrive folder tree. This job runs ahead of
+ * `OneDriveResumePollerJob` and asks Microsoft Graph for a PDF rendition of
+ * each Word file.
+ *
+ * Output layout per recruiter folder (level 1 under `CBL_ONEDRIVE_RESUME_PATH`):
+ *   <recruiter>/
+ *     pdfs/                                ← all converted PDFs land here, flat
+ *       Upload-6AprilA&P-johnresume.pdf    ← name encodes the original subpath
+ *     converted/                           ← mirrors the original folder tree
+ *       Upload/6 April A&P/john resume.docx
+ *
+ * - Spaces stripped from each path segment when building the flat PDF name; segments joined with `-`.
+ * - Conversion delegated to Graph — no LibreOffice/Chromium on Render.
+ * - Idempotent: a flat name already in `pdfs/` skips the conversion step (the original is still moved).
+ * - Anything already inside `converted/` or `pdfs/` is excluded from input scanning so re-runs never reprocess output.
+ *
+ * The job avoids "expected" 404/409 probes against Graph so the provider's
+ * shared error-rate gauge stays clean — folder existence is determined from
+ * the folder listings we already paginate through.
+ */
+export class OneDriveWordToPdfJob implements SchedulerJob {
+  name = 'OneDriveWordToPdfJob';
+
+  private get driveUser(): string {
+    return process.env.CBL_ONEDRIVE_USER?.trim() || 'vivek@cblsolutions.com';
+  }
+
+  private get folderPath(): string {
+    return process.env.CBL_ONEDRIVE_RESUME_PATH?.trim() || 'CBLAeroCons/Resumes';
+  }
+
+  private static GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+  private static MAX_FILES_PER_RUN = 200;
+  private static PAGE_SIZE = 200;
+  private static PDFS_FOLDER_NAME = 'pdfs';
+  private static CONVERTED_FOLDER_NAME = 'converted';
+  /** Graph PDF rendition has practical limits around a few hundred MB; resume docs sit well under this. Skip oversized files for manual review. */
+  private static MAX_DOC_BYTES = 50 * 1024 * 1024;
+
+  async run() {
+    const runId = await createSyncRun('onedrive-word-to-pdf');
+    try {
+      try {
+        await ensureProvidersInitialized();
+      } catch (initErr) {
+        console.error(
+          '[OneDriveWordToPdf] ensureProvidersInitialized failed (non-fatal):',
+          initErr instanceof Error ? initErr.message : initErr,
+        );
+      }
+
+      const graphStatus = assessGraphAvailability();
+      if (graphStatus !== 'available') {
+        const reason = graphStatus === 'kill_switched'
+          ? 'graph provider kill_switched'
+          : 'graph provider unregistered (init failed or Entra env missing)';
+        console.warn(`[OneDriveWordToPdf] Skipping run — ${reason}`);
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
+      const graph = getSharedGraphClient();
+      if (!graph) throw new Error('Graph client not configured — cannot convert OneDrive docs');
+
+      const rootId = await this.resolveRootId(graph);
+      if (!rootId) {
+        throw new Error(`Could not resolve root folder: ${this.folderPath}`);
+      }
+
+      const { files, recruiterChildren } = await this.scanInputTree(graph, rootId);
+      if (files.length === 0) {
+        console.log('[OneDriveWordToPdf] No Word files to convert');
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
+      console.log(`[OneDriveWordToPdf] ${files.length} Word files to process`);
+
+      // Per-recruiter context, lazily initialized when its first file is touched.
+      // Holds: pdfs/ folder ID + names of PDFs already there (idempotency without 404 probes),
+      //        converted/ folder ID + path→ID cache for the existing mirror tree.
+      const recruiterCtx = new Map<string, RecruiterCtx>();
+
+      let converted = 0;
+      let alreadyHadPdf = 0;
+      let failed = 0;
+
+      for (const file of files) {
+        try {
+          if (file.size > OneDriveWordToPdfJob.MAX_DOC_BYTES) {
+            console.warn(`[OneDriveWordToPdf] Skipping ${file.name} — exceeds ${OneDriveWordToPdfJob.MAX_DOC_BYTES} byte limit (${file.size})`);
+            failed++;
+            continue;
+          }
+
+          let ctx = recruiterCtx.get(file.recruiterFolderId);
+          if (!ctx) {
+            ctx = await this.initRecruiterCtx(graph, file.recruiterFolderId, recruiterChildren.get(file.recruiterFolderId) ?? []);
+            recruiterCtx.set(file.recruiterFolderId, ctx);
+          }
+
+          const flatPdfName = computeFlatPdfName(file.relativePath, file.name);
+
+          if (ctx.pdfsContents.has(flatPdfName.toLowerCase())) {
+            alreadyHadPdf++;
+            console.log(`[OneDriveWordToPdf] PDF already in pdfs/ for ${file.name} — moving original only`);
+          } else {
+            const pdfsId = await this.ensurePdfsFolder(graph, ctx);
+            const pdfBuffer = await this.fetchPdfRendition(graph, file.id);
+            await this.uploadFile(graph, pdfsId, flatPdfName, pdfBuffer, 'application/pdf');
+            ctx.pdfsContents.add(flatPdfName.toLowerCase());
+            converted++;
+            console.log(`[OneDriveWordToPdf] Converted ${file.name} → pdfs/${flatPdfName}`);
+          }
+
+          const targetParentId = await this.ensureConvertedPath(graph, ctx, file.relativePath);
+          await this.moveItem(graph, file.id, targetParentId, file.name);
+        } catch (err) {
+          failed++;
+          console.error(`[OneDriveWordToPdf] Failed for ${file.name}:`, err instanceof Error ? err.message : err);
+          recordSyncFailure('onedrive-word-to-pdf', file.name, err, runId);
+        }
+      }
+
+      console.log(`[OneDriveWordToPdf] Complete: ${converted} converted, ${alreadyHadPdf} already had PDF, ${failed} failed of ${files.length}`);
+      await completeSyncRun(runId, { succeeded: converted + alreadyHadPdf, failed, total: files.length });
+    } catch (err) {
+      recordSyncFailure('onedrive-word-to-pdf', 'job', err, runId);
+      await failSyncRun(runId, err instanceof Error ? (err.stack ?? err.message) : String(err));
+    }
+  }
+
+  private async resolveRootId(graph: import('../providers/graph').GraphProviderClient): Promise<string | null> {
+    const user = encodeURIComponent(this.driveUser);
+    const result = await graph.get<{ id: string }>(`/users/${user}/drive/root:/${this.folderPath}`);
+    if (!result.ok || !result.data?.id) {
+      console.warn(`[OneDriveWordToPdf] Root folder lookup failed (${result.status}): ${result.error ?? ''}`);
+      return null;
+    }
+    return result.data.id;
+  }
+
+  /**
+   * BFS the configured root and return:
+   *   - `files`: every `.doc`/`.docx` paired with its containing folder ID,
+   *     its recruiter folder ID (immediate child of root), and the relative
+   *     path (segments) from the recruiter down to the file's parent.
+   *   - `recruiterChildren`: map of recruiter folder ID → list of its
+   *     immediate children. Used to discover existing `pdfs/`/`converted/`
+   *     folders without a separate path-lookup probe.
+   *
+   * Files at the root level (no recruiter) fall back to the root ID. The
+   * BFS skips the `pdfs/` and `converted/` output folders entirely so a
+   * re-run never reprocesses its own output.
+   */
+  private async scanInputTree(
+    graph: import('../providers/graph').GraphProviderClient,
+    rootId: string,
+  ): Promise<{
+    files: Array<{ id: string; name: string; size: number; parentId: string; recruiterFolderId: string; relativePath: string[] }>;
+    recruiterChildren: Map<string, ChildItem[]>;
+  }> {
+    type GraphItem = { id: string; name: string; size: number; file?: { mimeType: string }; folder?: { childCount: number } };
+    type FolderPage = { value: GraphItem[]; '@odata.nextLink'?: string };
+    type QueueEntry = { url: string; folderId: string; recruiterFolderId: string; relativePath: string[]; isRoot: boolean };
+
+    const user = encodeURIComponent(this.driveUser);
+    const out: Array<{ id: string; name: string; size: number; parentId: string; recruiterFolderId: string; relativePath: string[] }> = [];
+    const recruiterChildren = new Map<string, ChildItem[]>();
+
+    const queue: QueueEntry[] = [
+      {
+        url: `/users/${user}/drive/items/${rootId}/children?$top=${OneDriveWordToPdfJob.PAGE_SIZE}`,
+        folderId: rootId,
+        recruiterFolderId: rootId,
+        relativePath: [],
+        isRoot: true,
+      },
+    ];
+
+    // Root falls back to itself when files sit at the very top level.
+    recruiterChildren.set(rootId, []);
+
+    while (queue.length > 0 && out.length < OneDriveWordToPdfJob.MAX_FILES_PER_RUN) {
+      const entry = queue.shift()!;
+      let nextUrl: string | null = entry.url;
+
+      while (nextUrl && out.length < OneDriveWordToPdfJob.MAX_FILES_PER_RUN) {
+        const result: ProviderCallResult<FolderPage> = await graph.get<FolderPage>(nextUrl);
+        if (!result.ok) {
+          console.warn(`[OneDriveWordToPdf] Folder listing failed (${result.status}): ${result.error ?? ''}`);
+          break;
+        }
+
+        for (const item of result.data?.value ?? []) {
+          // When listing a recruiter folder, capture its top-level children
+          // so we can discover existing pdfs/ and converted/ without probing.
+          if (entry.folderId === entry.recruiterFolderId && !entry.isRoot) {
+            const list = recruiterChildren.get(entry.recruiterFolderId) ?? [];
+            list.push({ id: item.id, name: item.name, isFolder: !!item.folder });
+            recruiterChildren.set(entry.recruiterFolderId, list);
+          }
+
+          if (item.folder) {
+            const lower = item.name.toLowerCase();
+            // Skip our own output folders so re-runs are safe.
+            if (lower === OneDriveWordToPdfJob.CONVERTED_FOLDER_NAME) continue;
+            if (lower === OneDriveWordToPdfJob.PDFS_FOLDER_NAME) continue;
+
+            const isFirstLevel = entry.isRoot;
+            const recruiterFolderId = isFirstLevel ? item.id : entry.recruiterFolderId;
+            const childRelativePath = isFirstLevel ? [] : [...entry.relativePath, item.name];
+
+            if (isFirstLevel) recruiterChildren.set(item.id, []);
+
+            queue.push({
+              url: `/users/${user}/drive/items/${item.id}/children?$top=${OneDriveWordToPdfJob.PAGE_SIZE}`,
+              folderId: item.id,
+              recruiterFolderId,
+              relativePath: childRelativePath,
+              isRoot: false,
+            });
+            continue;
+          }
+
+          if (item.file && /\.docx?$/i.test(item.name)) {
+            out.push({
+              id: item.id,
+              name: item.name,
+              size: item.size,
+              parentId: entry.folderId,
+              recruiterFolderId: entry.recruiterFolderId,
+              relativePath: entry.relativePath,
+            });
+          }
+        }
+
+        const rawNext = result.data?.['@odata.nextLink'];
+        nextUrl = rawNext && rawNext.length > 0 ? rawNext : null;
+      }
+    }
+
+    if (out.length >= OneDriveWordToPdfJob.MAX_FILES_PER_RUN) {
+      console.log(`[OneDriveWordToPdf] Capping at ${OneDriveWordToPdfJob.MAX_FILES_PER_RUN} files for this run`);
+    }
+    return { files: out, recruiterChildren };
+  }
+
+  /**
+   * Build the per-recruiter context: discover existing pdfs/ + converted/
+   * folder IDs from the captured child listing, list pdfs/ contents (so
+   * idempotency checks happen in-memory), and walk any existing converted/
+   * subtree to populate the path→ID cache.
+   *
+   * All API calls here return 200; nothing trips the provider error rate.
+   */
+  private async initRecruiterCtx(
+    graph: import('../providers/graph').GraphProviderClient,
+    recruiterFolderId: string,
+    children: ChildItem[],
+  ): Promise<RecruiterCtx> {
+    const pdfsChild = children.find((c) => c.isFolder && c.name.toLowerCase() === OneDriveWordToPdfJob.PDFS_FOLDER_NAME);
+    const convertedChild = children.find((c) => c.isFolder && c.name.toLowerCase() === OneDriveWordToPdfJob.CONVERTED_FOLDER_NAME);
+
+    const pdfsContents = new Set<string>();
+    if (pdfsChild) {
+      const names = await this.listFolderItemNames(graph, pdfsChild.id);
+      for (const n of names) pdfsContents.add(n.toLowerCase());
+    }
+
+    const convertedPathCache = new Map<string, string>();
+    if (convertedChild) {
+      convertedPathCache.set('', convertedChild.id);
+      await this.walkConvertedTree(graph, convertedChild.id, [], convertedPathCache);
+    }
+
+    return {
+      recruiterFolderId,
+      pdfsId: pdfsChild?.id,
+      pdfsContents,
+      convertedId: convertedChild?.id,
+      convertedPathCache,
+    };
+  }
+
+  /** List a folder's children's names. All-200 path; pagination handled. */
+  private async listFolderItemNames(
+    graph: import('../providers/graph').GraphProviderClient,
+    folderId: string,
+  ): Promise<string[]> {
+    const user = encodeURIComponent(this.driveUser);
+    type Page = { value: Array<{ name: string }>; '@odata.nextLink'?: string };
+    let url: string | null = `/users/${user}/drive/items/${folderId}/children?$top=${OneDriveWordToPdfJob.PAGE_SIZE}&$select=name`;
+    const out: string[] = [];
+    while (url) {
+      const result: ProviderCallResult<Page> = await graph.get<Page>(url);
+      if (!result.ok) {
+        console.warn(`[OneDriveWordToPdf] Listing children failed (${result.status}): ${result.error ?? ''}`);
+        return out;
+      }
+      for (const item of result.data?.value ?? []) out.push(item.name);
+      const next = result.data?.['@odata.nextLink'];
+      url = next && next.length > 0 ? next : null;
+    }
+    return out;
+  }
+
+  /** Recursively walk an existing converted/ tree to populate the path cache. */
+  private async walkConvertedTree(
+    graph: import('../providers/graph').GraphProviderClient,
+    folderId: string,
+    pathSoFar: string[],
+    cache: Map<string, string>,
+  ): Promise<void> {
+    const user = encodeURIComponent(this.driveUser);
+    type Page = { value: Array<{ id: string; name: string; folder?: object }>; '@odata.nextLink'?: string };
+    let url: string | null = `/users/${user}/drive/items/${folderId}/children?$top=${OneDriveWordToPdfJob.PAGE_SIZE}&$select=id,name,folder`;
+    while (url) {
+      const result: ProviderCallResult<Page> = await graph.get<Page>(url);
+      if (!result.ok) return;
+      for (const item of result.data?.value ?? []) {
+        if (item.folder) {
+          const childPath = [...pathSoFar, item.name];
+          cache.set(childPath.join('/'), item.id);
+          await this.walkConvertedTree(graph, item.id, childPath, cache);
+        }
+      }
+      const next = result.data?.['@odata.nextLink'];
+      url = next && next.length > 0 ? next : null;
+    }
+  }
+
+  private async ensurePdfsFolder(
+    graph: import('../providers/graph').GraphProviderClient,
+    ctx: RecruiterCtx,
+  ): Promise<string> {
+    if (ctx.pdfsId) return ctx.pdfsId;
+    const id = await this.createFolder(graph, ctx.recruiterFolderId, OneDriveWordToPdfJob.PDFS_FOLDER_NAME);
+    ctx.pdfsId = id;
+    return id;
+  }
+
+  /**
+   * Walk the relative path under converted/, creating any missing segments.
+   * Each create call hits a folder we *know* doesn't exist (cache miss),
+   * so we never see 409.
+   */
+  private async ensureConvertedPath(
+    graph: import('../providers/graph').GraphProviderClient,
+    ctx: RecruiterCtx,
+    relativePath: string[],
+  ): Promise<string> {
+    const cacheKey = relativePath.join('/');
+    const cached = ctx.convertedPathCache.get(cacheKey);
+    if (cached) return cached;
+
+    if (!ctx.convertedId) {
+      ctx.convertedId = await this.createFolder(graph, ctx.recruiterFolderId, OneDriveWordToPdfJob.CONVERTED_FOLDER_NAME);
+      ctx.convertedPathCache.set('', ctx.convertedId);
+    }
+
+    let cur = ctx.convertedId;
+    let curPath = '';
+    for (const seg of relativePath) {
+      curPath = curPath ? `${curPath}/${seg}` : seg;
+      let segId = ctx.convertedPathCache.get(curPath);
+      if (!segId) {
+        segId = await this.createFolder(graph, cur, seg);
+        ctx.convertedPathCache.set(curPath, segId);
+      }
+      cur = segId;
+    }
+    return cur;
+  }
+
+  private async createFolder(
+    graph: import('../providers/graph').GraphProviderClient,
+    parentId: string,
+    name: string,
+  ): Promise<string> {
+    const user = encodeURIComponent(this.driveUser);
+    const result = await graph.post<{ id: string }>(
+      `/users/${user}/drive/items/${parentId}/children`,
+      { name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' },
+    );
+    if (result.ok && result.data?.id) return result.data.id;
+    throw new Error(`Could not create folder ${name} under ${parentId} (${result.status}): ${result.error ?? ''}`);
+  }
+
+  /**
+   * Fetch the PDF rendition of a Word doc. Graph returns a 302 to a
+   * pre-signed download URL; `fetch()` follows the redirect transparently.
+   * Bypasses `GraphProviderClient` because the response is binary.
+   */
+  private async fetchPdfRendition(
+    graph: import('../providers/graph').GraphProviderClient,
+    itemId: string,
+  ): Promise<Buffer> {
+    const user = encodeURIComponent(this.driveUser);
+    const url = `${OneDriveWordToPdfJob.GRAPH_BASE}/users/${user}/drive/items/${itemId}/content?format=pdf`;
+    const token = await graph.getAccessToken();
+    const response = await fetchWithRetry(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      throw new Error(`PDF rendition failed (${response.status}): ${await response.text().catch(() => '')}`);
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  /** Simple PUT upload (good for files up to ~250MB per Graph). PDFs from resumes sit far below this. */
+  private async uploadFile(
+    graph: import('../providers/graph').GraphProviderClient,
+    parentId: string,
+    name: string,
+    buffer: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    const user = encodeURIComponent(this.driveUser);
+    const encodedName = encodeURIComponent(name);
+    const url = `${OneDriveWordToPdfJob.GRAPH_BASE}/users/${user}/drive/items/${parentId}:/${encodedName}:/content`;
+    const token = await graph.getAccessToken();
+    const response = await fetchWithRetry(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType,
+      },
+      // Cast: Node fetch accepts Buffer but the DOM lib types don't list it.
+      body: buffer as unknown as BodyInit,
+    });
+    if (!response.ok) {
+      throw new Error(`Upload of ${name} failed (${response.status}): ${await response.text().catch(() => '')}`);
+    }
+  }
+
+  private async moveItem(
+    graph: import('../providers/graph').GraphProviderClient,
+    itemId: string,
+    newParentId: string,
+    filename: string,
+  ): Promise<void> {
+    const user = encodeURIComponent(this.driveUser);
+    const result = await graph.patch(`/users/${user}/drive/items/${itemId}`, {
+      parentReference: { id: newParentId },
+    });
+    if (!result.ok) {
+      throw new Error(`Move of ${filename} failed (${result.status}): ${result.error ?? ''}`);
+    }
+    console.log(`[OneDriveWordToPdf] Moved ${filename} → converted/`);
+  }
+}
+
+type ChildItem = { id: string; name: string; isFolder: boolean };
+
+type RecruiterCtx = {
+  recruiterFolderId: string;
+  pdfsId?: string;
+  /** Lower-cased flat PDF basenames already present in pdfs/. */
+  pdfsContents: Set<string>;
+  convertedId?: string;
+  /** Path (segments joined by '/') → folder ID for the existing converted/ tree. Empty key = the converted/ root itself. */
+  convertedPathCache: Map<string, string>;
+};
+
+/**
+ * Build the flat PDF name from the path segments + original filename.
+ * Spaces stripped from each segment and from the basename; segments and
+ * basename joined by `-`; `.pdf` extension always.
+ *
+ *   ([], 'john resume.docx')                   → 'johnresume.pdf'
+ *   (['Upload', '6 April A&P'], 'jr.docx')     → 'Upload-6AprilA&P-jr.pdf'
+ */
+export function computeFlatPdfName(relativePath: string[], filename: string): string {
+  const ext = filename.match(/\.docx?$/i)?.[0] ?? '';
+  const baseNoExt = ext ? filename.slice(0, filename.length - ext.length) : filename;
+  const parts = [...relativePath, baseNoExt].map((s) => s.replace(/\s+/g, ''));
+  return `${parts.join('-')}.pdf`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -1254,6 +1736,15 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
     cronExpression: '*/15 * * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'email_sync',
+  });
+  // Convert recruiter-uploaded Word docs to PDF before the poller runs so
+  // they show up as PDFs in the same OneDrive tree.
+  scheduler.register(new OneDriveWordToPdfJob(), {
+    jobKey: 'onedrive-word-to-pdf',
+    scheduleName: 'OneDrive Word → PDF Conversion',
+    cronExpression: '*/30 * * * *',
+    policyFamily: 'ingestion_schedules',
+    policyKey: 'onedrive_word_to_pdf',
   });
   scheduler.register(new OneDriveResumePollerJob(), {
     jobKey: 'onedrive-sync',
