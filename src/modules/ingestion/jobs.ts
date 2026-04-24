@@ -656,10 +656,12 @@ export class OneDriveResumePollerJob implements SchedulerJob {
 }
 
 /**
- * OneDrive Word → PDF converter. Recruiters upload `.doc`/`.docx` resumes
- * alongside PDFs into the same OneDrive folder tree. This job runs ahead of
+ * OneDrive Document → PDF converter. Recruiters upload resumes in many
+ * formats (.docx, .doc, .rtf, .txt, .html/.htm, .odt, .md) alongside PDFs
+ * into the same OneDrive folder tree. This job runs ahead of
  * `OneDriveResumePollerJob` and asks Microsoft Graph for a PDF rendition of
- * each Word file.
+ * each non-PDF document — Graph natively supports all of the above formats
+ * via `?format=pdf` (no LibreOffice/Chromium on Render).
  *
  * Output layout per recruiter folder (level 1 under `CBL_ONEDRIVE_RESUME_PATH`):
  *   <recruiter>/
@@ -669,9 +671,9 @@ export class OneDriveResumePollerJob implements SchedulerJob {
  *       Upload/6 April A&P/john resume.docx
  *
  * - Spaces stripped from each path segment when building the flat PDF name; segments joined with `-`.
- * - Conversion delegated to Graph — no LibreOffice/Chromium on Render.
  * - Idempotent: a flat name already in `pdfs/` skips the conversion step (the original is still moved).
  * - Anything already inside `converted/` or `pdfs/` is excluded from input scanning so re-runs never reprocess output.
+ * - Non-text formats (images, .lnk shortcuts, .tmp lock files, no-extension files) are ignored — left in place for the recruiter to decide.
  *
  * The job avoids "expected" 404/409 probes against Graph so the provider's
  * shared error-rate gauge stays clean — folder existence is determined from
@@ -695,6 +697,13 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
   private static CONVERTED_FOLDER_NAME = 'converted';
   /** Graph PDF rendition has practical limits around a few hundred MB; resume docs sit well under this. Skip oversized files for manual review. */
   private static MAX_DOC_BYTES = 50 * 1024 * 1024;
+  /**
+   * Extensions Graph can render to PDF. Per Microsoft docs, the full set is
+   * larger (Excel/PowerPoint, etc.) — we restrict to text-bearing resume
+   * formats we've actually seen recruiters upload. Add an extension here
+   * AND mirror it in `CONVERTIBLE_EXT_REGEX` to enable it.
+   */
+  static readonly CONVERTIBLE_EXTENSIONS = ['doc', 'docx', 'rtf', 'txt', 'html', 'htm', 'odt', 'md'] as const;
 
   async run() {
     const runId = await createSyncRun('onedrive-word-to-pdf');
@@ -765,7 +774,13 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
             console.log(`[OneDriveWordToPdf] PDF already in pdfs/ for ${file.name} — moving original only`);
           } else {
             const pdfsId = await this.ensurePdfsFolder(graph, ctx);
-            const pdfBuffer = await this.fetchPdfRendition(graph, file.id);
+            // Graph rendition rejects .txt with 406 even though docs claim support.
+            // Workaround: wrap the text content in minimal RTF (which Graph DOES
+            // render) via a short-lived temp file under pdfs/ — that folder is
+            // BFS-excluded so the temp can never be picked up as input.
+            const pdfBuffer = file.name.toLowerCase().endsWith('.txt')
+              ? await this.renderTxtViaRtfWrap(graph, file, pdfsId)
+              : await this.fetchPdfRendition(graph, file.id);
             await this.uploadFile(graph, pdfsId, flatPdfName, pdfBuffer, 'application/pdf');
             ctx.pdfsContents.add(flatPdfName.toLowerCase());
             converted++;
@@ -882,7 +897,7 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
             continue;
           }
 
-          if (item.file && /\.docx?$/i.test(item.name)) {
+          if (item.file && CONVERTIBLE_EXT_REGEX.test(item.name)) {
             out.push({
               id: item.id,
               name: item.name,
@@ -1047,6 +1062,47 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
   }
 
   /**
+   * Workaround for Graph's `.txt` 406: download the text content, wrap it
+   * in minimal RTF, upload to a temp file under pdfs/ (BFS-excluded so the
+   * temp can never be picked up as input), render that temp to PDF, then
+   * delete the temp. The temp lives for ~1 second; if a delete fails the
+   * `.tmp-` prefix makes it easy to garbage-collect by hand.
+   */
+  private async renderTxtViaRtfWrap(
+    graph: import('../providers/graph').GraphProviderClient,
+    file: { id: string; name: string },
+    pdfsFolderId: string,
+  ): Promise<Buffer> {
+    const text = await this.downloadTextContent(graph, file.id);
+    const rtf = wrapTextAsRtf(text);
+    const rtfBuffer = Buffer.from(rtf, 'utf8');
+    const tempName = `.tmp-${crypto.randomUUID()}.rtf`;
+    const tempId = await this.uploadFileReturnId(graph, pdfsFolderId, tempName, rtfBuffer, 'application/rtf');
+    try {
+      return await this.fetchPdfRendition(graph, tempId);
+    } finally {
+      const del = await graph.delete(`/users/${encodeURIComponent(this.driveUser)}/drive/items/${tempId}`);
+      if (!del.ok && del.status !== 204) {
+        console.warn(`[OneDriveWordToPdf] Failed to delete temp wrapper ${tempName} (${del.status}) — clean up by hand`);
+      }
+    }
+  }
+
+  /** Download a file's raw bytes via Graph (used for the .txt → RTF wrap). */
+  private async downloadTextContent(
+    graph: import('../providers/graph').GraphProviderClient,
+    itemId: string,
+  ): Promise<string> {
+    const url = `${OneDriveWordToPdfJob.GRAPH_BASE}/users/${encodeURIComponent(this.driveUser)}/drive/items/${itemId}/content`;
+    const token = await graph.getAccessToken();
+    const response = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) {
+      throw new Error(`Text download failed (${response.status}): ${await response.text().catch(() => '')}`);
+    }
+    return await response.text();
+  }
+
+  /**
    * Fetch the PDF rendition of a Word doc. Graph returns a 302 to a
    * pre-signed download URL; `fetch()` follows the redirect transparently.
    * Bypasses `GraphProviderClient` because the response is binary.
@@ -1075,6 +1131,17 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
     buffer: Buffer,
     contentType: string,
   ): Promise<void> {
+    await this.uploadFileReturnId(graph, parentId, name, buffer, contentType);
+  }
+
+  /** Like uploadFile, but returns the new DriveItem id — used by the .txt RTF-wrap path. */
+  private async uploadFileReturnId(
+    graph: import('../providers/graph').GraphProviderClient,
+    parentId: string,
+    name: string,
+    buffer: Buffer,
+    contentType: string,
+  ): Promise<string> {
     const user = encodeURIComponent(this.driveUser);
     const encodedName = encodeURIComponent(name);
     const url = `${OneDriveWordToPdfJob.GRAPH_BASE}/users/${user}/drive/items/${parentId}:/${encodedName}:/content`;
@@ -1091,6 +1158,11 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
     if (!response.ok) {
       throw new Error(`Upload of ${name} failed (${response.status}): ${await response.text().catch(() => '')}`);
     }
+    const body = await response.json().catch(() => null) as { id?: string } | null;
+    if (!body?.id) {
+      throw new Error(`Upload of ${name} succeeded but response had no id`);
+    }
+    return body.id;
   }
 
   private async moveItem(
@@ -1123,18 +1195,61 @@ type RecruiterCtx = {
 };
 
 /**
+ * Regex matching every extension in `OneDriveWordToPdfJob.CONVERTIBLE_EXTENSIONS`.
+ * Kept in lockstep with that list — change one and you must change the other.
+ */
+export const CONVERTIBLE_EXT_REGEX = /\.(?:docx?|rtf|txt|html?|odt|md)$/i;
+
+/**
  * Build the flat PDF name from the path segments + original filename.
  * Spaces stripped from each segment and from the basename; segments and
  * basename joined by `-`; `.pdf` extension always.
  *
  *   ([], 'john resume.docx')                   → 'johnresume.pdf'
- *   (['Upload', '6 April A&P'], 'jr.docx')     → 'Upload-6AprilA&P-jr.pdf'
+ *   ([], 'cover note.txt')                     → 'covernote.pdf'
+ *   (['Upload', '6 April A&P'], 'jr.rtf')      → 'Upload-6AprilA&P-jr.pdf'
  */
 export function computeFlatPdfName(relativePath: string[], filename: string): string {
-  const ext = filename.match(/\.docx?$/i)?.[0] ?? '';
+  const ext = filename.match(CONVERTIBLE_EXT_REGEX)?.[0] ?? '';
   const baseNoExt = ext ? filename.slice(0, filename.length - ext.length) : filename;
   const parts = [...relativePath, baseNoExt].map((s) => s.replace(/\s+/g, ''));
   return `${parts.join('-')}.pdf`;
+}
+
+/**
+ * Wrap arbitrary text in a minimal valid RTF document. Used to work around
+ * Graph's `.txt` rendition rejection — RTF renders fine.
+ *
+ * Escapes the three RTF metacharacters (`\`, `{`, `}`) and converts newlines
+ * to `\par`. Non-ASCII chars are encoded as `\u<n>?` per RTF spec; Graph's
+ * renderer respects this for common scripts (no glyph guarantees beyond
+ * what its installed fonts cover, same caveat as native rendition).
+ */
+export function wrapTextAsRtf(text: string): string {
+  let escaped = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (ch === '\\' || ch === '{' || ch === '}') {
+      escaped += '\\' + ch;
+    } else if (ch === '\n') {
+      escaped += '\\par ';
+    } else if (ch === '\r' || ch === '\t') {
+      // \r often paired with \n — drop solo \r; \t becomes literal tab marker
+      if (ch === '\t') escaped += '\\tab ';
+    } else if (code < 128) {
+      escaped += ch;
+    } else if (code <= 0xFFFF) {
+      // Signed 16-bit per RTF spec; values > 32767 wrap to negative.
+      const signed = code > 32767 ? code - 65536 : code;
+      escaped += `\\u${signed}?`;
+    } else {
+      // Surrogate pair — encode each unit
+      const high = 0xD800 + ((code - 0x10000) >> 10);
+      const low  = 0xDC00 + ((code - 0x10000) & 0x3FF);
+      escaped += `\\u${high - 65536}?\\u${low - 65536}?`;
+    }
+  }
+  return `{\\rtf1\\ansi\\deff0 ${escaped}}`;
 }
 
 function escapeHtml(value: string): string {
@@ -1737,11 +1852,13 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
     policyFamily: 'ingestion_schedules',
     policyKey: 'email_sync',
   });
-  // Convert recruiter-uploaded Word docs to PDF before the poller runs so
-  // they show up as PDFs in the same OneDrive tree.
+  // Convert recruiter-uploaded documents (.docx/.doc/.rtf/.txt/.html/.odt/.md)
+  // to PDF before the poller runs so they show up as PDFs in the same tree.
+  // jobKey kept as 'onedrive-word-to-pdf' for continuity with the existing
+  // schedule_definitions row and sync_runs history.
   scheduler.register(new OneDriveWordToPdfJob(), {
     jobKey: 'onedrive-word-to-pdf',
-    scheduleName: 'OneDrive Word → PDF Conversion',
+    scheduleName: 'OneDrive Document → PDF Conversion',
     cronExpression: '*/30 * * * *',
     policyFamily: 'ingestion_schedules',
     policyKey: 'onedrive_word_to_pdf',
