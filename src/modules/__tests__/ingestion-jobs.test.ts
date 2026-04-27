@@ -257,11 +257,11 @@ describe('EmailIngestionJob', () => {
 });
 
 describe('registerIngestionJobs', () => {
-  it('registers all 7 ingestion jobs', () => {
+  it('registers all 9 ingestion jobs', () => {
     const mockScheduler = { register: vi.fn() };
     registerIngestionJobs(mockScheduler);
 
-    expect(mockScheduler.register).toHaveBeenCalledTimes(8);
+    expect(mockScheduler.register).toHaveBeenCalledTimes(9);
     const names = mockScheduler.register.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
     expect(names).toContain('CeipalIngestionJob');
     expect(names).toContain('EmailIngestionJob');
@@ -271,6 +271,7 @@ describe('registerIngestionJobs', () => {
     expect(names).toContain('DedupWorkerJob');
     expect(names).toContain('RoleDeductionEnrichmentJob');
     expect(names).toContain('CandidateAvailabilityRefreshJob');
+    expect(names).toContain('SmsDispatchJob');
   });
 
   it('registered jobs implement SchedulerJob interface', () => {
@@ -629,8 +630,8 @@ describe('OneDriveWordToPdfJob', () => {
     }
   });
 
-  it('continues processing other files after a per-file failure', async () => {
-    const { stub, moved } = makeGraphStub({
+  it('continues processing other files after a per-file failure (failed file is quarantined, healthy file converts)', async () => {
+    const { stub, created, moved } = makeGraphStub({
       rootId: 'root-id',
       children: {
         'root-id': [{ id: 'recruiter-E', name: 'Recruiter E', isFolder: true }],
@@ -659,8 +660,12 @@ describe('OneDriveWordToPdfJob', () => {
 
     await new OneDriveWordToPdfJob().run();
 
+    // Healthy file made it to converted/
     expect(moved.some((m) => m.itemId === 'doc-ok')).toBe(true);
-    expect(moved.some((m) => m.itemId === 'doc-fail')).toBe(false);
+    // Permanently-failed file (404 — Graph said no) was quarantined to failed/, NOT left in place
+    const failedFolder = created.find((c) => c.name === 'failed' && c.parentId === 'recruiter-E');
+    expect(failedFolder).toBeDefined();
+    expect(moved.some((m) => m.itemId === 'doc-fail' && m.newParentId === failedFolder!.newId)).toBe(true);
     expect(mocks.recordSyncFailure).toHaveBeenCalledWith(
       'onedrive-word-to-pdf',
       'broken.docx',
@@ -791,5 +796,152 @@ describe('OneDriveWordToPdfJob', () => {
     expect(calls.find((c) => c.url.includes('format=pdf'))).toBeUndefined();
     expect(calls.find((c) => c.method === 'PUT')).toBeUndefined();
     expect(moved).toHaveLength(0);
+  });
+
+  it('quarantines files Graph permanently rejects (4xx) to <recruiter>/failed/ with sidecar', async () => {
+    const { stub, created, moved } = makeGraphStub({
+      rootId: 'root-id',
+      children: {
+        'root-id': [{ id: 'rec', name: 'Rec', isFolder: true }],
+        'rec':     [{ id: 'doc-bad', name: 'corrupt.docx' }],
+      },
+    });
+    providerMocks.getSharedGraphClient.mockReturnValue(stub);
+
+    let uploadCounter = 0;
+    const fetchCalls: Array<{ url: string; method: string; body?: BodyInit | null }> = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      fetchCalls.push({ url, method, body: init?.body });
+      if (url.includes('format=pdf')) {
+        return { ok: false, status: 406, arrayBuffer: async () => new ArrayBuffer(0), text: async () => 'cannotOpenFile' } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: method === 'PUT' ? 201 : 200,
+        arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+        text: async () => '',
+        json: async () => ({ id: `mock-${++uploadCounter}` }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OneDriveWordToPdfJob().run();
+
+    // failed/ folder created under recruiter
+    const failedCreate = created.find((c) => c.parentId === 'rec' && c.name === 'failed');
+    expect(failedCreate).toBeDefined();
+    // Sidecar uploaded into failed/
+    const sidecarPut = fetchCalls.find((c) => c.method === 'PUT' && c.url.endsWith('corrupt.docx.failed.txt:/content'));
+    expect(sidecarPut).toBeDefined();
+    expect(sidecarPut?.url).toContain(`/drive/items/${failedCreate!.newId}:/`);
+    // Sidecar body mentions the HTTP status
+    const bodyText = sidecarPut?.body instanceof Buffer ? sidecarPut.body.toString('utf8')
+                   : typeof sidecarPut?.body === 'string' ? sidecarPut.body : '';
+    expect(bodyText).toContain('HTTP 406');
+    // Original moved into failed/ (NOT into converted/)
+    expect(moved).toContainEqual({ itemId: 'doc-bad', newParentId: failedCreate!.newId });
+    expect(moved.find((m) => m.newParentId === 'created-rec-converted')).toBeUndefined();
+    // recordSyncFailure logged
+    expect(mocks.recordSyncFailure).toHaveBeenCalledWith(
+      'onedrive-word-to-pdf', 'corrupt.docx', expect.any(Error), expect.anything(),
+    );
+  });
+
+  it('does NOT quarantine on transient 5xx — leaves file in place for retry', async () => {
+    const { stub, created, moved } = makeGraphStub({
+      rootId: 'root-id',
+      children: {
+        'root-id': [{ id: 'rec', name: 'Rec', isFolder: true }],
+        'rec':     [{ id: 'doc-flaky', name: 'flaky.docx' }],
+      },
+    });
+    providerMocks.getSharedGraphClient.mockReturnValue(stub);
+
+    // PDF rendition returns 500 every time — transient. fetchWithRetry will exhaust retries.
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.includes('format=pdf')) {
+        return { ok: false, status: 500, arrayBuffer: async () => new ArrayBuffer(0), text: async () => 'service unavailable' } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: method === 'PUT' ? 201 : 200,
+        arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+        text: async () => '',
+        json: async () => ({ id: 'mock' }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OneDriveWordToPdfJob().run();
+
+    // No failed/ folder created on transient errors — file stays for retry
+    expect(created.find((c) => c.name === 'failed')).toBeUndefined();
+    // File NOT moved anywhere
+    expect(moved).toHaveLength(0);
+    expect(mocks.recordSyncFailure).toHaveBeenCalled();
+  }, 30_000);
+
+  it('reuses an existing failed/ folder rather than recreating it', async () => {
+    const { stub, created, moved } = makeGraphStub({
+      rootId: 'root-id',
+      children: {
+        'root-id': [{ id: 'rec', name: 'Rec', isFolder: true }],
+        'rec': [
+          { id: 'failed-existing', name: 'failed', isFolder: true },
+          { id: 'doc-bad', name: 'broken.docx' },
+        ],
+        'failed-existing': [],
+      },
+    });
+    providerMocks.getSharedGraphClient.mockReturnValue(stub);
+
+    let uploadCounter = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (url.includes('format=pdf')) {
+        return { ok: false, status: 406, arrayBuffer: async () => new ArrayBuffer(0), text: async () => 'cannotOpenFile' } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: method === 'PUT' ? 201 : 200,
+        arrayBuffer: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+        text: async () => '',
+        json: async () => ({ id: `mock-${++uploadCounter}` }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OneDriveWordToPdfJob().run();
+
+    // The existing failed/ should be reused — no new create
+    expect(created.find((c) => c.name === 'failed')).toBeUndefined();
+    // Original moved into the pre-existing failed-existing folder
+    expect(moved).toContainEqual({ itemId: 'doc-bad', newParentId: 'failed-existing' });
+  });
+
+  it('excludes existing failed/ folder from input scanning (no reprocess of quarantined files)', async () => {
+    const { stub } = makeGraphStub({
+      rootId: 'root-id',
+      children: {
+        'root-id': [{ id: 'rec', name: 'Rec', isFolder: true }],
+        'rec': [
+          { id: 'failed-folder', name: 'failed', isFolder: true },
+          { id: 'fresh-doc', name: 'fresh.docx' },
+        ],
+        // If the BFS erroneously recursed into failed/, we'd find this and reprocess
+        'failed-folder': [{ id: 'old-bad-doc', name: 'previously-quarantined.docx' }],
+      },
+    });
+    providerMocks.getSharedGraphClient.mockReturnValue(stub);
+    const { calls } = mockBinaryFetch();
+
+    await new OneDriveWordToPdfJob().run();
+
+    // Only one rendition fetched — for fresh.docx, not the quarantined doc
+    const pdfFetches = calls.filter((c) => c.url.includes('format=pdf'));
+    expect(pdfFetches).toHaveLength(1);
+    expect(pdfFetches[0].url).toContain('/drive/items/fresh-doc/');
   });
 });

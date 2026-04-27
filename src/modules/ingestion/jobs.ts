@@ -8,6 +8,7 @@ import { extractCandidateFromDocument } from '../../features/candidate-managemen
 import { deduceRoles } from '../../features/candidate-management/application/role-deduction';
 import { recordSyncFailure, createSyncRun, completeSyncRun, failSyncRun, upsertCandidateFromEmailFull, batchUpsertCandidatesFromATS, DEFAULT_TENANT_ID, mapToCandidateRow } from './index';
 import { fetchWithRetry } from './fetch-with-retry';
+import type { SmsDispatchContext } from '../../features/outreach-engagement/application/sms-dispatch';
 import {
   computeFileHash,
   isAlreadyProcessed,
@@ -46,6 +47,23 @@ export interface SchedulerJob {
  */
 function assessGraphAvailability(): 'available' | 'kill_switched' | 'unavailable' {
   const mode = getProviderRegistry().getMode('graph');
+  if (mode === null) return 'unavailable';
+  if (mode === 'kill_switched') return 'kill_switched';
+  return 'available';
+}
+
+/**
+ * SMS provider gate for the dispatch job. Mirrors `assessGraphAvailability`
+ * — returns `'available'` when registered and not kill-switched, otherwise
+ * reports the reason so the job can short-circuit cleanly.
+ *
+ * Hardcoded to `'sms-stub'` today; Story 3-1b (Telnyx) swaps in the new
+ * provider name here + in `ensureProvidersInitialized()`. Long-term, this
+ * should read the `provider_routing_policies.primary_provider` for
+ * `channel='sms'` — deferred until a second SMS provider actually exists.
+ */
+function assessSmsAvailability(): 'available' | 'kill_switched' | 'unavailable' {
+  const mode = getProviderRegistry().getMode('sms-stub');
   if (mode === null) return 'unavailable';
   if (mode === 'kill_switched') return 'kill_switched';
   return 'available';
@@ -695,6 +713,7 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
   private static PAGE_SIZE = 200;
   private static PDFS_FOLDER_NAME = 'pdfs';
   private static CONVERTED_FOLDER_NAME = 'converted';
+  private static FAILED_FOLDER_NAME = 'failed';
   /** Graph PDF rendition has practical limits around a few hundred MB; resume docs sit well under this. Skip oversized files for manual review. */
   private static MAX_DOC_BYTES = 50 * 1024 * 1024;
   /**
@@ -793,6 +812,19 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
           failed++;
           console.error(`[OneDriveWordToPdf] Failed for ${file.name}:`, err instanceof Error ? err.message : err);
           recordSyncFailure('onedrive-word-to-pdf', file.name, err, runId);
+
+          // Permanent Graph rendition rejection (4xx, except 429 rate-limit)
+          // → quarantine to <recruiter>/failed/ so we don't retry this file
+          // every 30 min forever. Transient errors (5xx, 429, network) leave
+          // the file in place for the next run to retry.
+          if (err instanceof GraphRenditionError && err.status >= 400 && err.status < 500 && err.status !== 429) {
+            const ctx = recruiterCtx.get(file.recruiterFolderId);
+            if (ctx) {
+              await this.quarantineFile(graph, file, ctx, err).catch((quarErr: unknown) => {
+                console.error(`[OneDriveWordToPdf] Quarantine of ${file.name} also failed (will retry next run):`, quarErr instanceof Error ? quarErr.message : quarErr);
+              });
+            }
+          }
         }
       }
 
@@ -880,6 +912,7 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
             // Skip our own output folders so re-runs are safe.
             if (lower === OneDriveWordToPdfJob.CONVERTED_FOLDER_NAME) continue;
             if (lower === OneDriveWordToPdfJob.PDFS_FOLDER_NAME) continue;
+            if (lower === OneDriveWordToPdfJob.FAILED_FOLDER_NAME) continue;
 
             const isFirstLevel = entry.isRoot;
             const recruiterFolderId = isFirstLevel ? item.id : entry.recruiterFolderId;
@@ -935,6 +968,7 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
   ): Promise<RecruiterCtx> {
     const pdfsChild = children.find((c) => c.isFolder && c.name.toLowerCase() === OneDriveWordToPdfJob.PDFS_FOLDER_NAME);
     const convertedChild = children.find((c) => c.isFolder && c.name.toLowerCase() === OneDriveWordToPdfJob.CONVERTED_FOLDER_NAME);
+    const failedChild = children.find((c) => c.isFolder && c.name.toLowerCase() === OneDriveWordToPdfJob.FAILED_FOLDER_NAME);
 
     const pdfsContents = new Set<string>();
     if (pdfsChild) {
@@ -954,6 +988,7 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
       pdfsContents,
       convertedId: convertedChild?.id,
       convertedPathCache,
+      failedId: failedChild?.id,
     };
   }
 
@@ -1012,6 +1047,45 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
     const id = await this.createFolder(graph, ctx.recruiterFolderId, OneDriveWordToPdfJob.PDFS_FOLDER_NAME);
     ctx.pdfsId = id;
     return id;
+  }
+
+  private async ensureFailedFolder(
+    graph: import('../providers/graph').GraphProviderClient,
+    ctx: RecruiterCtx,
+  ): Promise<string> {
+    if (ctx.failedId) return ctx.failedId;
+    const id = await this.createFolder(graph, ctx.recruiterFolderId, OneDriveWordToPdfJob.FAILED_FOLDER_NAME);
+    ctx.failedId = id;
+    return id;
+  }
+
+  /**
+   * Move a file Graph permanently rejected into `<recruiter>/failed/` and
+   * drop a `<filename>.failed.txt` sidecar with the reason + timestamp so
+   * the recruiter can see what needs manual handling. Idempotent — if a
+   * sidecar already exists from a prior partial run, the upload overwrites.
+   */
+  private async quarantineFile(
+    graph: import('../providers/graph').GraphProviderClient,
+    file: { id: string; name: string },
+    ctx: RecruiterCtx,
+    err: GraphRenditionError,
+  ): Promise<void> {
+    const failedFolderId = await this.ensureFailedFolder(graph, ctx);
+
+    const sidecarName = `${file.name}.failed.txt`;
+    const sidecarBody = [
+      `Quarantined: ${new Date().toISOString()}`,
+      `Reason: HTTP ${err.status}`,
+      err.message,
+      '',
+      'Common causes: password-protected file, legacy .doc renamed to .docx, corrupt upload, unsupported embedded content.',
+      'Re-save as PDF (or as a clean .docx) and re-upload to fix.',
+    ].join('\n');
+    await this.uploadFile(graph, failedFolderId, sidecarName, Buffer.from(sidecarBody, 'utf8'), 'text/plain');
+
+    await this.moveItem(graph, file.id, failedFolderId, file.name);
+    console.log(`[OneDriveWordToPdf] Quarantined ${file.name} → failed/ (HTTP ${err.status})`);
   }
 
   /**
@@ -1118,7 +1192,8 @@ export class OneDriveWordToPdfJob implements SchedulerJob {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
-      throw new Error(`PDF rendition failed (${response.status}): ${await response.text().catch(() => '')}`);
+      const body = await response.text().catch(() => '');
+      throw new GraphRenditionError(response.status, `PDF rendition failed (${response.status}): ${body}`);
     }
     return Buffer.from(await response.arrayBuffer());
   }
@@ -1192,7 +1267,22 @@ type RecruiterCtx = {
   convertedId?: string;
   /** Path (segments joined by '/') → folder ID for the existing converted/ tree. Empty key = the converted/ root itself. */
   convertedPathCache: Map<string, string>;
+  /** failed/ folder ID if it already existed (or is created on first quarantine). */
+  failedId?: string;
 };
+
+/**
+ * Thrown by `fetchPdfRendition` when Graph's Office Service rejects a file
+ * (4xx). The status is preserved so the per-file catch can distinguish a
+ * permanent rejection (quarantine the file) from a transient error
+ * (5xx/429/network — leave for retry).
+ */
+export class GraphRenditionError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'GraphRenditionError';
+  }
+}
 
 /**
  * Regex matching every extension in `OneDriveWordToPdfJob.CONVERTIBLE_EXTENSIONS`.
@@ -1836,6 +1926,141 @@ export class CandidateAvailabilityRefreshJob implements SchedulerJob {
   }
 }
 
+/**
+ * SMS dispatch — Story 3.1 Task 4 / AC 6.
+ *
+ * Claims batches of due `sms_sends` rows (`status='pending' AND
+ * scheduled_for <= now`) and runs each one through the per-row dispatch
+ * orchestrator (`features/outreach-engagement/application/sms-dispatch.ts`).
+ * Per-row errors are caught, logged via `recordSyncFailure`, and never kill
+ * the loop (Clay retro lesson). Batch-level fatals fail the sync run.
+ *
+ * The runtime context (candidate phone, opt-out, contact windows, template
+ * row, provider, audit-log writer, funnel emitter) is assembled here from
+ * real repositories; unit tests for the orchestrator itself live in
+ * `sms-dispatch.test.ts`.
+ */
+export class SmsDispatchJob implements SchedulerJob {
+  name = 'SmsDispatchJob';
+
+  async run(params?: { batchSize?: number; tenantId?: string }): Promise<void> {
+    const runId = await createSyncRun('sms_dispatch');
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+    let total = 0;
+
+    try {
+      try {
+        await ensureProvidersInitialized();
+      } catch (initErr) {
+        console.error(
+          '[SmsDispatchJob] ensureProvidersInitialized failed (non-fatal):',
+          initErr instanceof Error ? initErr.message : initErr,
+        );
+      }
+
+      // F1 (kill-switch gate): mirrors EmailIngestionJob / CeipalIngestionJob.
+      // If an operator has flipped sms-stub to kill_switched in the admin UI,
+      // the routing-policy restore at startup rehydrated that mode — honour it
+      // and skip the tick cleanly.
+      const smsStatus = assessSmsAvailability();
+      if (smsStatus !== 'available') {
+        const reason = smsStatus === 'kill_switched'
+          ? 'sms-stub provider kill_switched'
+          : 'sms-stub provider unregistered (init failed or registry not wired)';
+        console.warn(`[SmsDispatchJob] Skipping run — ${reason}`);
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
+      // Dynamic imports keep the job file light and avoid circular deps.
+      const { claimDueSmsSends, updateSmsSendStatus, writeOutreachAuditLog } = await import(
+        '../../features/outreach-engagement/infrastructure/sms-send-repository'
+      );
+      const { getTemplateById } = await import(
+        '../../features/outreach-engagement/infrastructure/sms-template-repository'
+      );
+      const { loadCandidateRuntimeSnapshot } = await import(
+        '../../features/outreach-engagement/infrastructure/candidate-runtime'
+      );
+      const { loadDefaultContactWindow } = await import(
+        '../../features/outreach-engagement/infrastructure/contact-window-policy'
+      );
+      const { dispatchClaimedSend } = await import(
+        '../../features/outreach-engagement/application/sms-dispatch'
+      );
+      const { getSharedSmsProvider } = await import('../providers/sms-stub');
+
+      const tenantId = params?.tenantId ?? DEFAULT_TENANT_ID;
+      const batchSize = Math.min(Math.max(params?.batchSize ?? 50, 1), 500);
+
+      const claimed = await claimDueSmsSends(tenantId, batchSize);
+      total = claimed.length;
+
+      if (claimed.length === 0) {
+        await completeSyncRun(runId, { succeeded: 0, failed: 0, total: 0 });
+        return;
+      }
+
+      // F3 (DB-as-source-of-truth for admin-editable defaults; dev-standards §29):
+      // read the contact window from policy_registry/policy_versions so admin
+      // edits via the scheduler UI (Story 2-7a) are respected. Falls back to
+      // HARDCODED_DEFAULT_CONTACT_WINDOW with a warn log only if the row is
+      // absent or malformed.
+      const defaultWindows = await loadDefaultContactWindow();
+
+      const provider = getSharedSmsProvider();
+
+      // F5 (type safety): declare ctx with its exact interface so drift in
+      // SmsDispatchContext errors at the property, not the call site.
+      const ctx: SmsDispatchContext = {
+        defaultWindows,
+        provider,
+        now: () => new Date(),
+        getCandidate: async (send) => loadCandidateRuntimeSnapshot(send.tenantId, send.candidateId),
+        getTemplate: async (send) => getTemplateById(send.tenantId, send.templateId),
+        updateStatus: async (patch) => { await updateSmsSendStatus(patch); },
+        writeAuditLog: async (row) => { await writeOutreachAuditLog(row); },
+        emitFunnelEvent: (payload) => {
+          // Architecture §Observability Tier 1: structured JSON line on stdout.
+          console.log(JSON.stringify({ kind: 'funnel_event', ...payload }));
+        },
+      };
+
+      for (const send of claimed) {
+        try {
+          const outcome = await dispatchClaimedSend(send, ctx);
+          if (outcome.kind === 'sent') succeeded += 1;
+          else if (outcome.kind === 'failed') failed += 1;
+          else skipped += 1;
+        } catch (err) {
+          failed += 1;
+          console.error('[SmsDispatchJob] per-row error:', err);
+          recordSyncFailure('sms_dispatch', send.id, err, runId);
+        }
+      }
+
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          module: 'SmsDispatchJob',
+          action: 'batch_complete',
+          total,
+          succeeded,
+          failed,
+          skipped,
+        }),
+      );
+
+      await completeSyncRun(runId, { succeeded, failed, total });
+    } catch (err) {
+      console.error('[SmsDispatchJob] Fatal error:', err);
+      await failSyncRun(runId, err instanceof Error ? (err.stack ?? err.message) : String(err));
+    }
+  }
+}
+
 export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, metadata?: SchedulerRegistration): void }) {
   // DN5: All jobs carry policyFamily/policyKey so cadences are versioned and auditable
   scheduler.register(new CeipalIngestionJob(), {
@@ -1897,6 +2122,14 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
     cronExpression: '0 */4 * * *',
     policyFamily: 'refresh_cadences',
     policyKey: 'candidate_availability',
+  });
+  // Story 3.1 AC 6: dispatch SMS sends whose scheduled_for is due.
+  scheduler.register(new SmsDispatchJob(), {
+    jobKey: 'sms-dispatch',
+    scheduleName: 'SMS Outreach Dispatcher',
+    cronExpression: '*/10 * * * *',
+    policyFamily: 'outreach_schedules',
+    policyKey: 'sms_dispatch',
   });
 }
 
