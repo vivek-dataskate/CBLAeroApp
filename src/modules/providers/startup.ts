@@ -37,6 +37,10 @@ import {
   buildAnthropicLLMProvider,
   initializeLLMProviderFromStartup,
 } from '@/modules/ai';
+import {
+  buildStubSmsProviderFromEnv,
+  initializeSmsProviderFromStartup,
+} from './sms-stub';
 import { emitProviderAdminAlert } from './admin-alert';
 import type { BaseProviderClient } from './base-client';
 import type { ProviderLogEntry } from './types';
@@ -179,6 +183,18 @@ async function initializeImpl(
     // `setLLMProvider()` in a test's `beforeEach` (review patch E7).
     initializeLLMProviderFromStartup(anthropicProvider);
   }
+
+  // 1f. Stub SMS (Story 3.1). Registered unconditionally — has no env vars.
+  //     Story 3.1b replaces this factory with `TelnyxSmsProvider`; the
+  //     `SmsProvider` capability interface is the frozen swap contract.
+  //     Like Anthropic, the stub reports health directly to the registry,
+  //     so we do NOT `wireClient` it.
+  //
+  //     `initializeSmsProviderFromStartup` is init-only: a test that did
+  //     `setSharedSmsProvider(mock)` before ensureProvidersInitialized()
+  //     keeps the mock (mirrors review patch E7 for Anthropic).
+  safeRegister(registry, 'sms-stub');
+  initializeSmsProviderFromStartup(buildStubSmsProviderFromEnv());
 
   if (options?.skipDb || !isSupabaseConfigured() || dbWiringComplete) return;
 
