@@ -150,7 +150,7 @@ describe('ensureProvidersInitialized — Supabase wiring (Story 1.12c)', () => {
     expect(snap?.health.totalFailures).toBeGreaterThanOrEqual(1);
   });
 
-  it('all 6 providers visible when every env var is configured (AC 4)', async () => {
+  it('all 7 providers visible when every env var is configured (AC 4)', async () => {
     process.env.CLAY_API_KEY = 'k';
     process.env.CEIPAL_API_KEY = 'c';
     process.env.CEIPAL_USERNAME = 'u';
@@ -165,14 +165,15 @@ describe('ensureProvidersInitialized — Supabase wiring (Story 1.12c)', () => {
     await ensureProvidersInitialized({ registry });
 
     const names = registry.listProviders().map((p) => p.name).sort();
-    // clay (inbound) + clay-outbound + ceipal + graph + anthropic + supabase
+    // clay (inbound) + clay-outbound + ceipal + graph + anthropic + supabase + sms-stub (Story 3.1)
     expect(names).toContain('clay');
     expect(names).toContain('clay-outbound');
     expect(names).toContain('ceipal');
     expect(names).toContain('graph');
     expect(names).toContain('anthropic');
     expect(names).toContain('supabase');
-    expect(names).toHaveLength(6);
+    expect(names).toContain('sms-stub');
+    expect(names).toHaveLength(7);
   });
 
   it('resetProvidersForTest stops the health ping interval', async () => {

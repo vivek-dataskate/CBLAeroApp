@@ -56,24 +56,25 @@ describe('ensureProvidersInitialized', () => {
     vi.restoreAllMocks();
   });
 
-  it('registers only clay (inbound) when no env vars are set', async () => {
+  it('registers clay (inbound) + sms-stub when no env vars are set', async () => {
+    // Story 3.1: `sms-stub` is env-free and always registered.
     const registry = new ProviderRegistry();
     await ensureProvidersInitialized({ registry, skipDb: true });
 
     const names = registry.listProviders().map((p) => p.name).sort();
-    expect(names).toEqual(['clay']);
+    expect(names).toEqual(['clay', 'sms-stub']);
   });
 
-  it('registers clay + clay-outbound when CLAY_API_KEY is set', async () => {
+  it('registers clay + clay-outbound + sms-stub when CLAY_API_KEY is set', async () => {
     process.env.CLAY_API_KEY = 'k';
     const registry = new ProviderRegistry();
     await ensureProvidersInitialized({ registry, skipDb: true });
 
     const names = registry.listProviders().map((p) => p.name).sort();
-    expect(names).toEqual(['clay', 'clay-outbound']);
+    expect(names).toEqual(['clay', 'clay-outbound', 'sms-stub']);
   });
 
-  it('registers ceipal + clay providers when all env vars are set', async () => {
+  it('registers ceipal + clay + sms-stub when all env vars are set', async () => {
     process.env.CLAY_API_KEY = 'k';
     process.env.CEIPAL_API_KEY = 'c';
     process.env.CEIPAL_USERNAME = 'u';
@@ -84,10 +85,11 @@ describe('ensureProvidersInitialized', () => {
     await ensureProvidersInitialized({ registry, skipDb: true });
 
     const names = registry.listProviders().map((p) => p.name).sort();
-    expect(names).toEqual(['ceipal', 'clay', 'clay-outbound']);
+    expect(names).toEqual(['ceipal', 'clay', 'clay-outbound', 'sms-stub']);
     expect(registry.getMode('ceipal')).toBe('normal');
     expect(registry.getMode('clay')).toBe('normal');
     expect(registry.getMode('clay-outbound')).toBe('normal');
+    expect(registry.getMode('sms-stub')).toBe('normal');
   });
 
   it('is idempotent — concurrent callers share a promise, second call no-ops', async () => {
@@ -99,9 +101,11 @@ describe('ensureProvidersInitialized', () => {
     ]);
     await ensureProvidersInitialized({ registry, skipDb: true });
 
-    // `clay` is registered exactly once — all other subsequent calls no-op.
-    expect(spy).toHaveBeenCalledTimes(1);
+    // Story 3.1: two providers (`clay`, `sms-stub`) are registered exactly once
+    // across concurrent callers — every subsequent call no-ops (safeRegister).
+    expect(spy).toHaveBeenCalledTimes(2);
     expect(spy).toHaveBeenCalledWith('clay');
+    expect(spy).toHaveBeenCalledWith('sms-stub');
   });
 
   it('registers graph provider when Entra SSO env is configured (Story 1.12b)', async () => {
