@@ -2124,13 +2124,20 @@ export function registerIngestionJobs(scheduler: { register(job: SchedulerJob, m
     policyKey: 'candidate_availability',
   });
   // Story 3.1 AC 6: dispatch SMS sends whose scheduled_for is due.
-  scheduler.register(new SmsDispatchJob(), {
-    jobKey: 'sms-dispatch',
-    scheduleName: 'SMS Outreach Dispatcher',
-    cronExpression: '*/10 * * * *',
-    policyFamily: 'outreach_schedules',
-    policyKey: 'sms_dispatch',
-  });
+  // Gated off by default while the outreach feature is still being built —
+  // set CBL_OUTREACH_SMS_DISPATCH_ENABLED=true in Render once the migration
+  // is applied and the full flow (provider, click-tracking, rate limits) is
+  // ready. Without the gate the cron fires every 10 min and trips the
+  // missing-RPC error in prod.
+  if (process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED === 'true') {
+    scheduler.register(new SmsDispatchJob(), {
+      jobKey: 'sms-dispatch',
+      scheduleName: 'SMS Outreach Dispatcher',
+      cronExpression: '*/10 * * * *',
+      policyFamily: 'outreach_schedules',
+      policyKey: 'sms_dispatch',
+    });
+  }
 }
 
 // GlobalScheduler stub removed — deferred to Story 2.7. Use registerIngestionJobs() with a real scheduler.

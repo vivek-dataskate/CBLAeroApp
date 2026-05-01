@@ -257,21 +257,43 @@ describe('EmailIngestionJob', () => {
 });
 
 describe('registerIngestionJobs', () => {
-  it('registers all 9 ingestion jobs', () => {
-    const mockScheduler = { register: vi.fn() };
-    registerIngestionJobs(mockScheduler);
+  it('registers all 9 ingestion jobs when SMS dispatch is enabled', () => {
+    const prev = process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+    process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED = 'true';
+    try {
+      const mockScheduler = { register: vi.fn() };
+      registerIngestionJobs(mockScheduler);
 
-    expect(mockScheduler.register).toHaveBeenCalledTimes(9);
-    const names = mockScheduler.register.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
-    expect(names).toContain('CeipalIngestionJob');
-    expect(names).toContain('EmailIngestionJob');
-    expect(names).toContain('OneDriveResumePollerJob');
-    expect(names).toContain('OneDriveWordToPdfJob');
-    expect(names).toContain('SavedSearchDigestJob');
-    expect(names).toContain('DedupWorkerJob');
-    expect(names).toContain('RoleDeductionEnrichmentJob');
-    expect(names).toContain('CandidateAvailabilityRefreshJob');
-    expect(names).toContain('SmsDispatchJob');
+      expect(mockScheduler.register).toHaveBeenCalledTimes(9);
+      const names = mockScheduler.register.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
+      expect(names).toContain('CeipalIngestionJob');
+      expect(names).toContain('EmailIngestionJob');
+      expect(names).toContain('OneDriveResumePollerJob');
+      expect(names).toContain('OneDriveWordToPdfJob');
+      expect(names).toContain('SavedSearchDigestJob');
+      expect(names).toContain('DedupWorkerJob');
+      expect(names).toContain('RoleDeductionEnrichmentJob');
+      expect(names).toContain('CandidateAvailabilityRefreshJob');
+      expect(names).toContain('SmsDispatchJob');
+    } finally {
+      if (prev === undefined) delete process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+      else process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED = prev;
+    }
+  });
+
+  it('omits SmsDispatchJob when feature flag is unset', () => {
+    const prev = process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+    delete process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+    try {
+      const mockScheduler = { register: vi.fn() };
+      registerIngestionJobs(mockScheduler);
+
+      expect(mockScheduler.register).toHaveBeenCalledTimes(8);
+      const names = mockScheduler.register.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
+      expect(names).not.toContain('SmsDispatchJob');
+    } finally {
+      if (prev !== undefined) process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED = prev;
+    }
   });
 
   it('registered jobs implement SchedulerJob interface', () => {
