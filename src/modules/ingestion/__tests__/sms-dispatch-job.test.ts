@@ -549,23 +549,48 @@ describe('SmsDispatchJob (integration, in-memory)', () => {
     });
   });
 
-  it('registry contains sms-dispatch registration via registerIngestionJobs()', async () => {
-    const registered: Array<{ job: { name: string }; meta?: Record<string, unknown> }> = [];
-    const { registerIngestionJobs } = await import('../jobs');
-    registerIngestionJobs({
-      register(job, meta) {
-        registered.push({ job, meta });
-      },
-    });
+  it('registry contains sms-dispatch registration via registerIngestionJobs() when feature flag is on', async () => {
+    const prev = process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+    process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED = 'true';
+    try {
+      const registered: Array<{ job: { name: string }; meta?: Record<string, unknown> }> = [];
+      const { registerIngestionJobs } = await import('../jobs');
+      registerIngestionJobs({
+        register(job, meta) {
+          registered.push({ job, meta });
+        },
+      });
 
-    const smsEntry = registered.find((r) => r.meta?.jobKey === 'sms-dispatch');
-    expect(smsEntry).toBeDefined();
-    expect(smsEntry?.meta).toMatchObject({
-      jobKey: 'sms-dispatch',
-      scheduleName: 'SMS Outreach Dispatcher',
-      cronExpression: '*/10 * * * *',
-      policyFamily: 'outreach_schedules',
-      policyKey: 'sms_dispatch',
-    });
+      const smsEntry = registered.find((r) => r.meta?.jobKey === 'sms-dispatch');
+      expect(smsEntry).toBeDefined();
+      expect(smsEntry?.meta).toMatchObject({
+        jobKey: 'sms-dispatch',
+        scheduleName: 'SMS Outreach Dispatcher',
+        cronExpression: '*/10 * * * *',
+        policyFamily: 'outreach_schedules',
+        policyKey: 'sms_dispatch',
+      });
+    } finally {
+      if (prev === undefined) delete process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+      else process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED = prev;
+    }
+  });
+
+  it('registry omits sms-dispatch when feature flag is unset', async () => {
+    const prev = process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+    delete process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED;
+    try {
+      const registered: Array<{ meta?: Record<string, unknown> }> = [];
+      const { registerIngestionJobs } = await import('../jobs');
+      registerIngestionJobs({
+        register(job, meta) {
+          registered.push({ meta });
+        },
+      });
+      const smsEntry = registered.find((r) => r.meta?.jobKey === 'sms-dispatch');
+      expect(smsEntry).toBeUndefined();
+    } finally {
+      if (prev !== undefined) process.env.CBL_OUTREACH_SMS_DISPATCH_ENABLED = prev;
+    }
   });
 });
